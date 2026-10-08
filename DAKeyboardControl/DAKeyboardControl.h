@@ -10,16 +10,15 @@
 
 typedef void (^DAKeyboardDidMoveBlock)(CGRect keyboardFrameInView, BOOL opening, BOOL closing);
 
-/** DAKeyboardControl allows you to easily add keyboard awareness and scrolling
- dismissal (a receding keyboard ala iMessages app) to any UIView, UIScrollView
- or UITableView with only 1 line of code. DAKeyboardControl automatically
- extends UIView and provides a block callback with the keyboard's current origin.
+/** Keyboard awareness and native interactive dismissal for UIView/UIScrollView
+ hosts on iOS 18 and later. Frames are local to the host, with zero height when
+ the keyboard is dismissed. No private keyboard views are accessed.
  */
 
 @interface UIView (DAKeyboardControl)
 
-/** The keyboardTriggerOffset property allows you to choose at what point the
- user's finger "engages" the keyboard.
+/** Padding above the keyboard where the native dismissal gesture engages.
+ Typically the attached view's measured height. Negative values are clamped to 0.
  */
 @property (nonatomic) CGFloat keyboardTriggerOffset;
 @property (nonatomic, readonly) BOOL keyboardWillRecede;

@@ -2,7 +2,32 @@
 Example code for TiDAKeyboardControl
 ====================================
 
-In this folder you’ll find 2 different files. This is the explanation of both.
+`panning.js`
+------------
+
+This is the focused example for version 1.1.0 on iOS 18 and later. Install the
+module and add it to `tiapp.xml` as described in the [main README](../README.md).
+Copy `panning.js` into a Classic app's `Resources` directory, then run:
+
+```js
+require('panning')();
+```
+
+The menu contains all four combinations of `extendSafeArea` (`false`/`true`) and
+`extendEdges` (none/all). In each mode, tap the field, drag downward from the
+blue margin, reverse a partial drag, fully dismiss, and reopen the keyboard.
+The blue bar should remain attached throughout. Also test Disable/Enable and
+return to the menu to reopen the same mode.
+
+The example logs focus, blur, and keyboard visibility changes, and checks that
+the `keyboardchange` frame values are finite numbers. The four-mode checks
+passed in simulators running iOS 18.4, 26.5, and 27.0. Toggle and repeated
+screen-reopening checks passed on iOS 27.0. Physical-device testing is pending.
+
+This example covers keyboard panning. Table content insets and automatic
+composer resizing are separate features.
+
+The original examples below are retained for reference.
 
 
 `automatic.js`

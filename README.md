@@ -13,26 +13,70 @@ Do you want to create a perfect clone of the iMessage compose interface? ***Fear
 
 Titanium SDK wrapper for the awesome [DAKeyboardControl][dakc] from [@danielamitay][da]! (iOS only)
 
+### Version 1.1.0
+
+The keyboard backend now uses UIKit's interactive scroll dismissal and
+`UIKeyboardLayoutGuide`, with an iOS 18 minimum deployment target. The intended
+runtime targets are iOS 18, 26, and 27. Existing `keyboardPanning`, `lockedViews`,
+`keyboardTriggerOffset`, and `keyboardchange` names are preserved.
+
+Set `keyboardTriggerOffset` to the attached view's measured height to let the
+dismissal gesture engage above the keyboard. Locked-view translation uses its
+actual native parent bounds, including Titanium's `extendSafeArea` and
+`extendEdges` layout. The module does not change those window properties or add
+table content insets.
+
+The focused `example/panning.js` test has four safe-area/edge-extension modes,
+keyboard show/hide, a panning toggle, and close/reopen. It can be run from a
+Classic app with the module in `tiapp.xml`:
+
+```js
+require('panning')();
+```
+
+Build the module using the current Titanium CLI rather than the legacy Python
+packager:
+
+```sh
+ti build -p ios --build-only --project-dir . --sdk 13.4.1.GA --no-prompt
+```
+
+The package is written to `dist/it.smc.dakeyboardcontrol-iphone-1.1.0.zip`.
+Simulator testing confirmed smooth dragging, reversal, dismissal, and reopening
+in all four layout modes on iOS 18.4, 26.5, and 27.0. On iOS 27.0, disabling and
+reenabling panning and repeatedly closing/reopening the screen also passed.
+The module builds with Titanium SDK 13.4.1.GA for arm64 devices and
+arm64/x86_64 simulators. Physical-device testing remains outstanding.
+
 ### Installation
 
-You can install this module using [gitTio][gittio-cli] with
+Download `it.smc.dakeyboardcontrol-iphone-1.1.0.zip` from the
+[iOS v1.1.0 release][rls]. Extract it into your Titanium app's root directory
+for an app-local installation. The archive contains
+`modules/iphone/it.smc.dakeyboardcontrol/1.1.0/`.
 
-    gittio install it.smc.dakeyboardcontrol
+Add the module inside the existing `<modules>` element in `tiapp.xml`:
 
-Alternatively you can [download a specific release][rls] for manual installation.
+```xml
+<module platform="iphone" version="1.1.0">it.smc.dakeyboardcontrol</module>
+```
 
-[rls]: https://github.com/smclab/TiDAKeyboardControl/releases
-[gittio-cli]: http://gitt.io/cli
+Set `<min-ios-ver>18.0</min-ios-ver>` inside `<ios>`. Version 1.1.0 was built and
+tested with Titanium SDK 13.4.1.GA. Clean the consuming app after replacing a
+previously installed package with the same version.
+
+[rls]: https://github.com/designbymind/TiDAKeyboardControl/releases/tag/ios-v1.1.0
 
 ### Example
 
-You can run the example running the following command
+Copy `example/panning.js` into a Classic app's `Resources` directory and call
+`require('panning')();` from `Resources/app.js`. The module must be installed and
+listed in `tiapp.xml` as shown above.
 
-    gittio demo it.smc.dakeyboardcontrol
+The [example folder][exm] also contains the original automatic and manual
+examples. Use the focused panning example to check modern safe-area layouts.
 
-The source for this demo application can be found in [the `example` folder][exm].
-
-[exm]: https://github.com/smclab/TiDAKeyboardControl/tree/master/example
+[exm]: https://github.com/designbymind/TiDAKeyboardControl/tree/master/example
 
 
 Usage overview

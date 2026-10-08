@@ -20,6 +20,7 @@
 
 
 - (void)setKeyboardPanning:(id)args;
+- (id)keyboardPanning;
 
 
 @end

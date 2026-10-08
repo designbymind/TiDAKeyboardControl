@@ -1,1 +1,9 @@
-Place your change log text here.  This file will be incorporated with your app at package time.
+1.1.0 (2026-10-07)
+- Replace private keyboard-view manipulation with native interactive dismissal.
+- Track keyboard movement with UIKeyboardLayoutGuide on iOS 18 and later.
+- Account for locked-view parent bounds, safe areas, and extended edges.
+- Preserve the existing Titanium properties and keyboardchange frame event.
+- Update device/simulator packaging and add a focused panning example.
+- Correct the JavaScript boolean getter and defer setup until proxy initialization finishes.
+- Synchronize locked-view movement during dragging without queued transform updates.
+- Confirm all four safe-area/edge modes in iOS 18.4, 26.5, and 27.0 simulators.

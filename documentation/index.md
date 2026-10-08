@@ -1,5 +1,9 @@
 # TiDAKeyboardControl Module
 
+Version 1.1.0 requires iOS 18 or later and uses native UIKit
+interactive dismissal. See [the focused example](../example/panning.js) for safe-area and extended-edge
+test modes. Chat content insets and automatic composer sizing are separate work.
+
 ## Description
 
 Do you want to create a perfect clone of the iMessage compose interface? ***Fear no more!*** You can now respond to keyboard events (show, hide and interactive changes) and customize how much space will be used as an offset during interactive panning.
@@ -15,12 +19,31 @@ Thanks to the native implementation using Objective-C categories to extend class
 
 ## Usage
 
-###Properties
+### Properties
 - ``keyboardTriggerOffset``: *number*, 
 How much space must be took on top of the keyboard.
 
-- ``keyboardPanning``: *number*, This activates the panning feature.
+- ``keyboardPanning``: *boolean*, This activates the panning feature.
 - ``lockedViews``: *[View]*, Automatically add the specified View as a locked view.
+
+The module manages each locked view's `transform`. Keep the view anchored to the
+bottom of its parent, and update `keyboardTriggerOffset` from its measured height
+after layout. Translation accounts for the actual parent bounds, including
+`extendSafeArea` and `extendEdges` on Titanium windows.
+
+### Events
+
+`keyboardchange` provides numeric `x`, `y`, `width`, and `height` values in the
+host view's local coordinate system. A hidden keyboard has `height: 0` and `y`
+at the bottom of the host. Identical frames do not generate repeated events.
+For smooth attached-view movement, use `lockedViews`; JavaScript event delivery
+is suitable for observing changes but can arrive later than native updates.
+
+### Cleanup
+
+Set `keyboardPanning` to `false` when closing the host window to remove keyboard
+tracking and interactive-dismissal setup. It can be enabled again on a live
+window. The focused example exercises both toggling and close/reopen behavior.
 
 
 An extensive example can be found in `example/app.js`, the following one just acts as an overview.
@@ -93,5 +116,3 @@ You should have received a copy of the [GNU Lesser General Public
 License](http://www.gnu.org/licenses/lgpl-2.1.html) along with this library; if
 not, write to the Free Software Foundation, Inc., 51 Franklin Street, Fifth
 Floor, Boston, MA 02110-1301 USA
-
-

@@ -1,764 +1,363 @@
 //
 //  DAKeyboardControl.m
-//  DAKeyboardControlExample
-//
-//  Created by Daniel Amitay on 7/14/12.
-//  Copyright (c) 2012 Daniel Amitay. All rights reserved.
+//  Original implementation by Daniel Amitay, Copyright (c) 2012.
+//  Modern UIKit keyboard tracking and dismissal for TiDAKeyboardControl.
 //
 
 #import "DAKeyboardControl.h"
 #import <objc/runtime.h>
 
+static char DAControlKey;
+static char DATriggerOffsetKey;
+@class DAKeyboardController;
 
-static inline UIViewAnimationOptions AnimationOptionsForCurve(UIViewAnimationCurve curve)
-{
-    return curve << 16;
-}
-
-static char UIViewKeyboardTriggerOffset;
-static char UIViewKeyboardDidMoveFrameBasedBlock;
-static char UIViewKeyboardDidMoveConstraintBasedBlock;
-static char UIViewKeyboardActiveInput;
-static char UIViewKeyboardActiveView;
-static char UIViewKeyboardPanRecognizer;
-static char UIViewPreviousKeyboardRect;
-static char UIViewIsPanning;
-static char UIViewKeyboardOpened;
-
-@interface UIView (DAKeyboardControl_Internal) <UIGestureRecognizerDelegate>
-
-@property (nonatomic) DAKeyboardDidMoveBlock frameBasedKeyboardDidMoveBlock;
-@property (nonatomic) DAKeyboardDidMoveBlock constraintBasedKeyboardDidMoveBlock;
-@property (nonatomic, strong) UIResponder *keyboardActiveInput;
-@property (nonatomic, strong) UIView *keyboardActiveView;
-@property (nonatomic, strong) UIPanGestureRecognizer *keyboardPanRecognizer;
-@property (nonatomic) CGRect previousKeyboardRect;
-@property (nonatomic, getter = isPanning) BOOL panning;
-@property (nonatomic, getter = isKeyboardOpened) BOOL keyboardOpened;
+// The run loop retains its display link. This target must not retain the
+// controller, so releasing the host view can also release the controller.
+@interface DADisplayLinkTarget : NSObject
+@property (nonatomic, weak) DAKeyboardController *controller;
+- (void)tick:(CADisplayLink *)link;
 @end
 
-@implementation UIView (DAKeyboardControl)
-@dynamic keyboardTriggerOffset;
+@interface DADismissalScrollView : UIScrollView <UIGestureRecognizerDelegate>
+@property (nonatomic, weak) DAKeyboardController *controller;
+@end
 
-+ (void)load
+@interface DAKeyboardController : NSObject
+@property (nonatomic, weak) UIView *host;
+@property (nonatomic, strong) DADismissalScrollView *dismissalScroll;
+@property (nonatomic, weak) UIScrollView *nativeScroll;
+@property (nonatomic) UIScrollViewKeyboardDismissMode originalDismissMode;
+@property (nonatomic, strong) UIView *trackingView;
+@property (nonatomic, strong) NSArray<NSLayoutConstraint *> *constraints;
+@property (nonatomic, strong) CADisplayLink *displayLink;
+@property (nonatomic, copy) DAKeyboardDidMoveBlock frameHandler;
+@property (nonatomic, copy) DAKeyboardDidMoveBlock constraintHandler;
+@property (nonatomic) CGRect lastFrame;
+@property (nonatomic) BOOL originalUsesBottomSafeArea;
+@property (nonatomic) CGFloat originalDismissPadding;
+@property (nonatomic) BOOL installed;
+@property (nonatomic) BOOL tracking;
+@property (nonatomic) BOOL opening;
+@property (nonatomic) BOOL closing;
+- (void)installWithPanning:(BOOL)panning;
+- (void)remove;
+- (void)tick;
+- (void)hostAttachmentChanged;
+- (void)updateTriggerOffset;
+- (BOOL)ownsFirstResponder;
+@end
+
+static UIView *DAFindFirstResponder(UIView *view)
 {
-    // Swizzle the 'addSubview:' method to ensure that all input fields
-    // have a valid inputAccessoryView upon addition to the view heirarchy
-    SEL originalSelector = @selector(addSubview:);
-    SEL swizzledSelector = @selector(swizzled_addSubview:);
-    Method originalMethod = class_getInstanceMethod(self, originalSelector);
-    Method swizzledMethod = class_getInstanceMethod(self, swizzledSelector);
-    class_addMethod(self,
-                    originalSelector,
-                    class_getMethodImplementation(self, originalSelector),
-                    method_getTypeEncoding(originalMethod));
-    class_addMethod(self,
-                    swizzledSelector,
-                    class_getMethodImplementation(self, swizzledSelector),
-                    method_getTypeEncoding(swizzledMethod));
-    method_exchangeImplementations(originalMethod, swizzledMethod);
-}
-
-#pragma mark - Public Methods
-
-- (void)addKeyboardPanningWithActionHandler:(DAKeyboardDidMoveBlock)actionHandler
-{
-    [self addKeyboardControl:YES frameBasedActionHandler:actionHandler constraintBasedActionHandler:0];
-}
-
-- (void)addKeyboardPanningWithFrameBasedActionHandler:(DAKeyboardDidMoveBlock)didMoveFrameBasesBlock constraintBasedActionHandler:(DAKeyboardDidMoveBlock)didMoveConstraintBasesBlock
-{
-    [self addKeyboardControl:YES frameBasedActionHandler:didMoveFrameBasesBlock constraintBasedActionHandler:didMoveConstraintBasesBlock];
-}
-
-- (void)addKeyboardNonpanningWithActionHandler:(DAKeyboardDidMoveBlock)actionHandler
-{
-    [self addKeyboardControl:NO frameBasedActionHandler:actionHandler constraintBasedActionHandler:0];
-}
-
-- (void)addKeyboardNonpanningWithFrameBasedActionHandler:(DAKeyboardDidMoveBlock)didMoveFrameBasesBlock
-                            constraintBasedActionHandler:(DAKeyboardDidMoveBlock)didMoveConstraintBasesBlock
-{
-    [self addKeyboardControl:NO frameBasedActionHandler:didMoveFrameBasesBlock constraintBasedActionHandler:didMoveConstraintBasesBlock];
-}
-
-- (void)addKeyboardControl:(BOOL)panning frameBasedActionHandler:(DAKeyboardDidMoveBlock)frameBasedActionHandler constraintBasedActionHandler:(DAKeyboardDidMoveBlock)constraintBasedActionHandler
-{
-#if (__IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_7_0)
-    if (panning && [self respondsToSelector:@selector(setKeyboardDismissMode:)]) {
-        [(UIScrollView *)self setKeyboardDismissMode:UIScrollViewKeyboardDismissModeInteractive];
-    } else {
-        self.panning = panning;
+    // Titanium's root view can be first responder solely to capture gestures.
+    // Only an actual text input establishes keyboard ownership.
+    if (view.isFirstResponder && ([view isKindOfClass:UITextField.class] || [view isKindOfClass:UITextView.class])) return view;
+    for (UIView *child in view.subviews) {
+        UIView *responder = DAFindFirstResponder(child);
+        if (responder) return responder;
     }
-#else
-    self.panning = panning;
-#endif
-    self.frameBasedKeyboardDidMoveBlock = frameBasedActionHandler;
-    self.constraintBasedKeyboardDidMoveBlock = constraintBasedActionHandler;
-    
-    // Register for text input notifications
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(responderDidBecomeActive:)
-                                                 name:UITextFieldTextDidBeginEditingNotification
-                                               object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(responderDidBecomeActive:)
-                                                 name:UITextViewTextDidBeginEditingNotification
-                                               object:nil];
-    
-    // Register for keyboard notifications
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(inputKeyboardWillShow:)
-                                                 name:UIKeyboardWillShowNotification
-                                               object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(inputKeyboardDidShow)
-                                                 name:UIKeyboardDidShowNotification
-                                               object:nil];
-    
-    // For the sake of 4.X compatibility
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(inputKeyboardWillChangeFrame:)
-                                                 name:@"UIKeyboardWillChangeFrameNotification"
-                                               object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(inputKeyboardDidChangeFrame)
-                                                 name:@"UIKeyboardDidChangeFrameNotification"
-                                               object:nil];
-    
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(inputKeyboardWillHide:)
-                                                 name:UIKeyboardWillHideNotification
-                                               object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(inputKeyboardDidHide)
-                                                 name:UIKeyboardDidHideNotification
-                                               object:nil];
-}
-
-- (CGRect)keyboardFrameInView
-{
-    if (self.keyboardActiveView)
-    {
-        CGRect keyboardFrameInView = [self convertRect:self.keyboardActiveView.frame
-                                              fromView:self.keyboardActiveView.superview];
-        return keyboardFrameInView;
-    }
-    else
-    {
-        CGRect keyboardFrameInView = CGRectMake(0.0f,
-                                                [[UIScreen mainScreen] bounds].size.height,
-                                                0.0f,
-                                                0.0f);
-        return keyboardFrameInView;
-    }
-}
-
-- (void)removeKeyboardControl
-{
-    // Unregister for text input notifications
-    [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                    name:UITextFieldTextDidBeginEditingNotification
-                                                  object:nil];
-    [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                    name:UITextViewTextDidBeginEditingNotification
-                                                  object:nil];
-    
-    // Unregister for keyboard notifications
-    [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                    name:UIKeyboardWillShowNotification
-                                                  object:nil];
-    [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                    name:UIKeyboardDidShowNotification
-                                                  object:nil];
-    
-    // For the sake of 4.X compatibility
-    [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                    name:@"UIKeyboardWillChangeFrameNotification"
-                                                  object:nil];
-    [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                    name:@"UIKeyboardDidChangeFrameNotification"
-                                                  object:nil];
-    
-    [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                    name:UIKeyboardWillHideNotification
-                                                  object:nil];
-    [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                    name:UIKeyboardDidHideNotification
-                                                  object:nil];
-    
-    // Unregister any gesture recognizer
-    [self removeGestureRecognizer:self.keyboardPanRecognizer];
-    
-    // Release a few properties
-    self.frameBasedKeyboardDidMoveBlock = nil;
-    self.keyboardActiveInput = nil;
-    self.keyboardActiveView = nil;
-    self.keyboardPanRecognizer = nil;
-}
-
-- (void)hideKeyboard
-{
-    if (self.keyboardActiveView)
-    {
-        self.keyboardActiveView.hidden = YES;
-        self.keyboardActiveView.userInteractionEnabled = NO;
-        [self.keyboardActiveInput resignFirstResponder];
-    }
-}
-
-#pragma mark - Input Notifications
-
-- (void)responderDidBecomeActive:(NSNotification *)notification
-{
-    // Grab the active input, it will be used to find the keyboard view later on
-    self.keyboardActiveInput = notification.object;
-    if (!self.keyboardActiveInput.inputAccessoryView)
-    {
-        UITextField *textField = (UITextField *)self.keyboardActiveInput;
-        if ([textField respondsToSelector:@selector(setInputAccessoryView:)])
-        {
-            UIView *nullView = [[UIView alloc] initWithFrame:CGRectZero];
-            nullView.backgroundColor = [UIColor clearColor];
-            textField.inputAccessoryView = nullView;
-        }
-        self.keyboardActiveInput = (UIResponder *)textField;
-        // Force the keyboard active view reset
-        [self inputKeyboardDidShow];
-    }
-}
-
-#pragma mark - Keyboard Notifications
-
-- (void)inputKeyboardWillShow:(NSNotification *)notification
-{
-    CGRect keyboardEndFrameWindow;
-    [[notification.userInfo valueForKey:UIKeyboardFrameEndUserInfoKey] getValue: &keyboardEndFrameWindow];
-    
-    double keyboardTransitionDuration;
-    [[notification.userInfo valueForKey:UIKeyboardAnimationDurationUserInfoKey] getValue:&keyboardTransitionDuration];
-    
-    UIViewAnimationCurve keyboardTransitionAnimationCurve;
-    [[notification.userInfo valueForKey:UIKeyboardAnimationCurveUserInfoKey] getValue:&keyboardTransitionAnimationCurve];
-    
-    self.keyboardActiveView.hidden = NO;
-    self.keyboardOpened = YES;
-    
-    CGRect keyboardEndFrameView = [self convertRect:keyboardEndFrameWindow fromView:nil];
-    
-    BOOL constraintBasedKeyboardDidMoveBlockCalled = self.constraintBasedKeyboardDidMoveBlock && !CGRectIsNull(keyboardEndFrameView);
-    if (constraintBasedKeyboardDidMoveBlockCalled)
-    self.constraintBasedKeyboardDidMoveBlock(keyboardEndFrameView, YES, NO);
-    
-    [UIView animateWithDuration:keyboardTransitionDuration
-                          delay:0.0f
-                        options:AnimationOptionsForCurve(keyboardTransitionAnimationCurve) | UIViewAnimationOptionBeginFromCurrentState
-                     animations:^{
-                         if (constraintBasedKeyboardDidMoveBlockCalled)
-                         [self layoutIfNeeded];
-                         if (self.frameBasedKeyboardDidMoveBlock && !CGRectIsNull(keyboardEndFrameView))
-                         self.frameBasedKeyboardDidMoveBlock(keyboardEndFrameView, YES, NO);
-                     }
-                     completion:^(__unused BOOL finished){
-                         if (self.panning && !self.keyboardPanRecognizer)
-                         {
-                             // Register for gesture recognizer calls
-                             self.keyboardPanRecognizer = [[UIPanGestureRecognizer alloc] initWithTarget:self
-                                                                                                  action:@selector(panGestureDidChange:)];
-                             [self.keyboardPanRecognizer setMinimumNumberOfTouches:1];
-                             [self.keyboardPanRecognizer setDelegate:self];
-                             [self.keyboardPanRecognizer setCancelsTouchesInView:NO];
-                             [self addGestureRecognizer:self.keyboardPanRecognizer];
-                         }
-                     }];
-}
-
-- (void)inputKeyboardDidShow
-{
-    // Grab the keyboard view
-    self.keyboardActiveView = [self findInputSetHostView];
-    self.keyboardActiveView.hidden = NO;
-    
-    // If the active keyboard view could not be found (UITextViews...), try again
-    if (!self.keyboardActiveView)
-    {
-        // Find the first responder on subviews and look re-assign first responder to it
-        self.keyboardActiveInput = [self recursiveFindFirstResponder:self];
-        self.keyboardActiveView = [self findInputSetHostView];
-        self.keyboardActiveView.hidden = NO;
-    }
-}
-
-- (void)inputKeyboardWillChangeFrame:(NSNotification *)notification
-{
-    CGRect keyboardEndFrameWindow;
-    [[notification.userInfo valueForKey:UIKeyboardFrameEndUserInfoKey] getValue: &keyboardEndFrameWindow];
-    
-    double keyboardTransitionDuration;
-    [[notification.userInfo valueForKey:UIKeyboardAnimationDurationUserInfoKey] getValue:&keyboardTransitionDuration];
-    
-    UIViewAnimationCurve keyboardTransitionAnimationCurve;
-    [[notification.userInfo valueForKey:UIKeyboardAnimationCurveUserInfoKey] getValue:&keyboardTransitionAnimationCurve];
-    
-    CGRect keyboardEndFrameView = [self convertRect:keyboardEndFrameWindow fromView:nil];
-    
-    BOOL constraintBasedKeyboardDidMoveBlockCalled = self.constraintBasedKeyboardDidMoveBlock && !CGRectIsNull(keyboardEndFrameView);
-    if (constraintBasedKeyboardDidMoveBlockCalled)
-    self.constraintBasedKeyboardDidMoveBlock(keyboardEndFrameView, NO, NO);
-    
-    [UIView animateWithDuration:keyboardTransitionDuration
-                          delay:0.0f
-                        options:AnimationOptionsForCurve(keyboardTransitionAnimationCurve) | UIViewAnimationOptionBeginFromCurrentState
-                     animations:^{
-                         if (constraintBasedKeyboardDidMoveBlockCalled)
-                         [self layoutIfNeeded];
-                         
-                         if (self.frameBasedKeyboardDidMoveBlock && !CGRectIsNull(keyboardEndFrameView))
-                         self.frameBasedKeyboardDidMoveBlock(keyboardEndFrameView, NO, NO);
-                     }
-                     completion:nil];
-}
-
-- (void)inputKeyboardDidChangeFrame
-{
-    // Nothing to see here
-}
-
-- (void)inputKeyboardWillHide:(NSNotification *)notification
-{
-    CGRect keyboardEndFrameWindow;
-    [[notification.userInfo valueForKey:UIKeyboardFrameEndUserInfoKey] getValue: &keyboardEndFrameWindow];
-    
-    double keyboardTransitionDuration;
-    [[notification.userInfo valueForKey:UIKeyboardAnimationDurationUserInfoKey] getValue:&keyboardTransitionDuration];
-    
-    UIViewAnimationCurve keyboardTransitionAnimationCurve;
-    [[notification.userInfo valueForKey:UIKeyboardAnimationCurveUserInfoKey] getValue:&keyboardTransitionAnimationCurve];
-    
-    CGRect keyboardEndFrameView = [self convertRect:keyboardEndFrameWindow fromView:nil];
-    
-    BOOL constraintBasedKeyboardDidMoveBlockCalled = self.constraintBasedKeyboardDidMoveBlock && !CGRectIsNull(keyboardEndFrameView);
-    if (constraintBasedKeyboardDidMoveBlockCalled)
-    self.constraintBasedKeyboardDidMoveBlock(keyboardEndFrameView, NO, YES);
-    
-    [UIView animateWithDuration:keyboardTransitionDuration
-                          delay:0.0f
-                        options:AnimationOptionsForCurve(keyboardTransitionAnimationCurve) | UIViewAnimationOptionBeginFromCurrentState
-                     animations:^{
-                         if (constraintBasedKeyboardDidMoveBlockCalled)
-                         [self layoutIfNeeded];
-                         
-                         if (self.frameBasedKeyboardDidMoveBlock && !CGRectIsNull(keyboardEndFrameView))
-                         self.frameBasedKeyboardDidMoveBlock(keyboardEndFrameView, NO, YES);
-                     }
-                     completion:^(__unused BOOL finished){
-                         // Remove gesture recognizer when keyboard is not showing
-                         [self removeGestureRecognizer:self.keyboardPanRecognizer];
-                         self.keyboardPanRecognizer = nil;
-                     }];
-}
-
-- (void)inputKeyboardDidHide
-{
-    self.keyboardActiveView.hidden = NO;
-    self.keyboardActiveView.userInteractionEnabled = YES;
-    self.keyboardActiveView = nil;
-    self.keyboardActiveInput = nil;
-    self.keyboardOpened = NO;
-}
-
-- (void)observeValueForKeyPath:(NSString *)keyPath
-                      ofObject:(id)object
-                        change:(__unused NSDictionary *)change
-                       context:(__unused void *)context
-{
-    if([keyPath isEqualToString:@"frame"] && object == self.keyboardActiveView)
-    {
-        CGRect keyboardEndFrameWindow = [[object valueForKeyPath:keyPath] CGRectValue];
-        CGRect keyboardEndFrameView = [self convertRect:keyboardEndFrameWindow fromView:self.keyboardActiveView.superview];
-        
-        if (CGRectEqualToRect(keyboardEndFrameView, self.previousKeyboardRect)) return;
-        
-        if (!self.keyboardActiveView.hidden && !CGRectIsNull(keyboardEndFrameView))
-        {
-            if (self.frameBasedKeyboardDidMoveBlock)
-            self.frameBasedKeyboardDidMoveBlock(keyboardEndFrameView, NO, NO);
-            if (self.constraintBasedKeyboardDidMoveBlock)
-            {
-                self.constraintBasedKeyboardDidMoveBlock(keyboardEndFrameView, NO, NO);
-                [self layoutIfNeeded];
-            }
-        }
-        
-        self.previousKeyboardRect = keyboardEndFrameView;
-    }
-}
-
-#pragma mark - Touches Management
-
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer
-{
-    if (gestureRecognizer == self.keyboardPanRecognizer || otherGestureRecognizer == self.keyboardPanRecognizer)
-    {
-        return YES;
-    }
-    else
-    {
-        return NO;
-    }
-}
-
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch
-{
-    if (gestureRecognizer == self.keyboardPanRecognizer)
-    {
-        // Don't allow panning if inside the active input (unless SELF is a UITextView and the receiving view)
-        return (![touch.view isFirstResponder] || ([self isKindOfClass:[UITextView class]] && [self isEqual:touch.view]));
-    }
-    else
-    {
-        return YES;
-    }
-}
-
-- (void)panGestureDidChange:(UIPanGestureRecognizer *)gesture
-{
-    if(!self.keyboardActiveView || !self.keyboardActiveInput || self.keyboardActiveView.hidden)
-    {
-        self.keyboardActiveInput = [self recursiveFindFirstResponder:self];
-        self.keyboardActiveView = [self findInputSetHostView];
-        self.keyboardActiveView.hidden = NO;
-    }
-    else
-    {
-        self.keyboardActiveView.hidden = NO;
-    }
-    
-    CGFloat keyboardViewHeight = self.keyboardActiveView.bounds.size.height;
-    CGFloat keyboardWindowHeight = self.keyboardActiveView.superview.bounds.size.height;
-    CGPoint touchLocationInKeyboardWindow = [gesture locationInView:self.keyboardActiveView.superview];
-    
-    // If touch is inside trigger offset, then disable keyboard input
-    if (touchLocationInKeyboardWindow.y > keyboardWindowHeight - keyboardViewHeight - self.keyboardTriggerOffset)
-    {
-        self.keyboardActiveView.userInteractionEnabled = NO;
-    }
-    else
-    {
-        self.keyboardActiveView.userInteractionEnabled = YES;
-    }
-    
-    switch (gesture.state)
-    {
-        case UIGestureRecognizerStateBegan:
-        {
-            // For the duration of this gesture, do not recognize more touches than
-            // it started with
-            gesture.maximumNumberOfTouches = gesture.numberOfTouches;
-        }
-            break;
-        case UIGestureRecognizerStateChanged:
-        {
-            CGRect newKeyboardViewFrame = self.keyboardActiveView.frame;
-            newKeyboardViewFrame.origin.y = touchLocationInKeyboardWindow.y + self.keyboardTriggerOffset;
-            // Bound the keyboard to the bottom of the screen
-            newKeyboardViewFrame.origin.y = MIN(newKeyboardViewFrame.origin.y, keyboardWindowHeight);
-            newKeyboardViewFrame.origin.y = MAX(newKeyboardViewFrame.origin.y, keyboardWindowHeight - keyboardViewHeight);
-            
-            // Only update if the frame has actually changed
-            if (newKeyboardViewFrame.origin.y != self.keyboardActiveView.frame.origin.y)
-            {
-                [UIView animateWithDuration:0.0f
-                                      delay:0.0f
-                                    options:UIViewAnimationOptionTransitionNone | UIViewAnimationOptionBeginFromCurrentState
-                                 animations:^{
-                                     [self.keyboardActiveView setFrame:newKeyboardViewFrame];
-                                     /* Unnecessary now, due to KVO on self.keyboardActiveView
-                                      CGRect newKeyboardViewFrameInView = [self convertRect:newKeyboardViewFrame
-                                      fromView:self.keyboardActiveView.window];
-                                      if (self.frameBasedKeyboardDidMoveBlock)
-                                      self.frameBasedKeyboardDidMoveBlock(newKeyboardViewFrameInView);
-                                      */
-                                 }
-                                 completion:nil];
-            }
-        }
-            break;
-        case UIGestureRecognizerStateEnded:
-        case UIGestureRecognizerStateCancelled:
-        {
-            CGFloat thresholdHeight = keyboardWindowHeight - keyboardViewHeight - self.keyboardTriggerOffset + 44.0f;
-            CGPoint velocity = [gesture velocityInView:self.keyboardActiveView];
-            BOOL shouldRecede;
-            
-            if (touchLocationInKeyboardWindow.y < thresholdHeight || velocity.y < 0)
-            shouldRecede = NO;
-            else
-            shouldRecede = YES;
-            
-            // If the keyboard has only been pushed down 44 pixels or has been
-            // panned upwards let it pop back up; otherwise, let it drop down
-            CGRect newKeyboardViewFrame = self.keyboardActiveView.frame;
-            newKeyboardViewFrame.origin.y = (!shouldRecede ? keyboardWindowHeight - keyboardViewHeight : keyboardWindowHeight);
-            
-            [UIView animateWithDuration:0.25f
-                                  delay:0.0f
-                                options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState
-                             animations:^{
-                                 [self.keyboardActiveView setFrame:newKeyboardViewFrame];
-                                 /* Unnecessary now, due to KVO on self.keyboardActiveView
-                                  CGRect newKeyboardViewFrameInView = [self convertRect:newKeyboardViewFrame
-                                  fromView:self.keyboardActiveView.window];
-                                  if (self.frameBasedKeyboardDidMoveBlock)
-                                  self.frameBasedKeyboardDidMoveBlock(newKeyboardViewFrameInView);
-                                  */
-                             }
-                             completion:^(__unused BOOL finished){
-                                 [[self keyboardActiveView] setUserInteractionEnabled:!shouldRecede];
-                                 if (shouldRecede)
-                                 {
-                                     [self hideKeyboard];
-                                 }
-                             }];
-            
-            // Set the max number of touches back to the default
-            gesture.maximumNumberOfTouches = NSUIntegerMax;
-        }
-            break;
-        default:
-            break;
-    }
-}
-
-#pragma mark - Internal Methods
-
-- (UIView *)recursiveFindFirstResponder:(UIView *)view
-{
-    if ([view isFirstResponder])
-    {
-        return view;
-    }
-    UIView *found = nil;
-    for (UIView *v in view.subviews)
-    {
-        found = [self recursiveFindFirstResponder:v];
-        if (found)
-        {
-            break;
-        }
-    }
-    return found;
-}
-
--(UIView*) findInputSetHostView {
-    if([[[UIDevice currentDevice] systemVersion] floatValue] >= 9.0) {
-        for(UIWindow* window in [[UIApplication sharedApplication] windows])
-        if([window isKindOfClass:NSClassFromString(@"UIRemoteKeyboardWindow")])
-        for(UIView* subView in window.subviews)
-        if([subView isKindOfClass:NSClassFromString(@"UIInputSetHostView")])
-        for(UIView* subsubView in subView.subviews)
-        if([subsubView isKindOfClass:NSClassFromString(@"UIInputSetHostView")])
-        return subsubView;
-    } else
-    return self.keyboardActiveInput.inputAccessoryView.superview;
     return nil;
 }
 
-- (void)swizzled_addSubview:(UIView *)subview
+@implementation DADisplayLinkTarget
+- (void)tick:(CADisplayLink *)link { [self.controller tick]; }
+@end
+
+@implementation DADismissalScrollView
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event
 {
-    if (!subview.inputAccessoryView)
-    {
-        if ([subview isKindOfClass:[UITextField class]])
-        {
-            UITextField *textField = (UITextField *)subview;
-            if ([textField respondsToSelector:@selector(setInputAccessoryView:)])
-            {
-                UIView *nullView = [[UIView alloc] initWithFrame:CGRectZero];
-                nullView.backgroundColor = [UIColor clearColor];
-                textField.inputAccessoryView = nullView;
-            }
-        }
-        else if ([subview isKindOfClass:[UITextView class]]) {
-            UITextView *textView = (UITextView *)subview;
-            if ([textView respondsToSelector:@selector(setInputAccessoryView:)] && [textView respondsToSelector:@selector(isEditable)] && textView.isEditable)
-            {
-                UIView *nullView = [[UIView alloc] initWithFrame:CGRectZero];
-                nullView.backgroundColor = [UIColor clearColor];
-                textView.inputAccessoryView = nullView;
-            }
+    // Titanium can reorder non-proxy subviews during layout. The helper must
+    // never intercept taps even if moved above the application's controls.
+    // Its pan recognizer is attached to the host and receives those touches.
+    return nil;
+}
+
+- (void)didMoveToWindow
+{
+    [super didMoveToWindow];
+    [self.controller hostAttachmentChanged];
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture
+{
+    if (gesture == self.panGestureRecognizer) {
+        if (![self.controller ownsFirstResponder]) return NO;
+        CGPoint velocity = [self.panGestureRecognizer velocityInView:self.controller.host];
+        if (fabs(velocity.x) > fabs(velocity.y)) return NO;
+    }
+    return [super gestureRecognizerShouldBegin:gesture];
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other
+{
+    // Preserve table/text-area scrolling. UIKit remains the delegate of its
+    // own recognizer; this helper is a UIScrollView subclass, not a replacement.
+    return gesture == self.panGestureRecognizer
+        && [other.view isKindOfClass:UIScrollView.class]
+        && [other.view isDescendantOfView:self.controller.host];
+}
+@end
+
+@implementation DAKeyboardController
+- (void)installWithPanning:(BOOL)panning
+{
+    UIView *host = self.host;
+    self.installed = YES;
+    self.lastFrame = CGRectNull;
+    UIKeyboardLayoutGuide *guide = host.keyboardLayoutGuide;
+    self.originalUsesBottomSafeArea = guide.usesBottomSafeArea;
+    self.originalDismissPadding = guide.keyboardDismissPadding;
+    // A dismissed keyboard produces zero translation. Titanium owns the
+    // safe-area layout of each locked view; the bridge accounts for its parent.
+    guide.usesBottomSafeArea = NO;
+    [self updateTriggerOffset];
+
+    if (panning && [host isKindOfClass:UIScrollView.class]) {
+        self.nativeScroll = (UIScrollView *)host;
+        self.originalDismissMode = self.nativeScroll.keyboardDismissMode;
+        self.nativeScroll.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+    } else {
+        // Native dismissal also works for a plain UIView by attaching the
+        // helper's public pan recognizer to it. No Titanium children are moved.
+        DADismissalScrollView *scroll = [[DADismissalScrollView alloc] initWithFrame:host.bounds];
+        scroll.controller = self;
+        scroll.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        scroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+        scroll.contentSize = host.bounds.size;
+        scroll.alwaysBounceVertical = YES;
+        scroll.showsVerticalScrollIndicator = NO;
+        scroll.showsHorizontalScrollIndicator = NO;
+        scroll.accessibilityElementsHidden = YES;
+        scroll.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+        self.dismissalScroll = scroll;
+        [host insertSubview:scroll atIndex:0];
+        if (panning) {
+            scroll.panGestureRecognizer.cancelsTouchesInView = NO;
+            [host addGestureRecognizer:scroll.panGestureRecognizer];
+        } else {
+            scroll.userInteractionEnabled = NO;
         }
     }
-    [self swizzled_addSubview:subview];
+
+    // Sample this app-owned view's presentation frame for animated show/hide
+    // and interactive movement. The guide's model frame jumps to the animation
+    // destination during an ordinary keyboard presentation or dismissal.
+    UIView *tracker = [[UIView alloc] init];
+    tracker.translatesAutoresizingMaskIntoConstraints = NO;
+    tracker.userInteractionEnabled = NO;
+    tracker.accessibilityElementsHidden = YES;
+    self.trackingView = tracker;
+    [host insertSubview:tracker atIndex:0];
+    self.constraints = @[
+        [tracker.topAnchor constraintEqualToAnchor:guide.topAnchor],
+        [tracker.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+        [tracker.widthAnchor constraintEqualToAnchor:host.widthAnchor],
+        [tracker.heightAnchor constraintEqualToConstant:1]
+    ];
+    [NSLayoutConstraint activateConstraints:self.constraints];
+
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center addObserver:self selector:@selector(inputBegan:) name:UITextFieldTextDidBeginEditingNotification object:nil];
+    [center addObserver:self selector:@selector(inputBegan:) name:UITextViewTextDidBeginEditingNotification object:nil];
+    [center addObserver:self selector:@selector(keyboardWillShow:) name:UIKeyboardWillShowNotification object:nil];
+    [center addObserver:self selector:@selector(keyboardWillHide:) name:UIKeyboardWillHideNotification object:nil];
+    [self hostAttachmentChanged];
 }
 
-#pragma mark - Property Methods
-
--(CGRect)previousKeyboardRect {
-    id previousRectValue = objc_getAssociatedObject(self, &UIViewPreviousKeyboardRect);
-    if (previousRectValue)
-    return [previousRectValue CGRectValue];
-    
-    return CGRectZero;
-}
-
--(void)setPreviousKeyboardRect:(CGRect)previousKeyboardRect {
-    [self willChangeValueForKey:@"previousKeyboardRect"];
-    objc_setAssociatedObject(self,
-                             &UIViewPreviousKeyboardRect,
-                             [NSValue valueWithCGRect:previousKeyboardRect],
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [self didChangeValueForKey:@"previousKeyboardRect"];
-}
-
-- (DAKeyboardDidMoveBlock)frameBasedKeyboardDidMoveBlock
+- (void)updateTriggerOffset
 {
-    return objc_getAssociatedObject(self,
-                                    &UIViewKeyboardDidMoveFrameBasedBlock);
+    if (self.installed) {
+        self.host.keyboardLayoutGuide.keyboardDismissPadding = MAX(0, self.host.keyboardTriggerOffset);
+    }
 }
 
-- (void)setFrameBasedKeyboardDidMoveBlock:(DAKeyboardDidMoveBlock)frameBasedKeyboardDidMoveBlock
+- (BOOL)ownsFirstResponder
 {
-    [self willChangeValueForKey:@"frameBasedKeyboardDidMoveBlock"];
-    objc_setAssociatedObject(self,
-                             &UIViewKeyboardDidMoveFrameBasedBlock,
-                             frameBasedKeyboardDidMoveBlock,
-                             OBJC_ASSOCIATION_COPY);
-    [self didChangeValueForKey:@"frameBasedKeyboardDidMoveBlock"];
+    return self.host.window != nil && DAFindFirstResponder(self.host) != nil;
 }
 
-- (DAKeyboardDidMoveBlock)constraintBasedKeyboardDidMoveBlock
+- (void)startDisplayLink
 {
-    return objc_getAssociatedObject(self,
-                                    &UIViewKeyboardDidMoveConstraintBasedBlock);
+    if (self.displayLink || !self.installed || !self.host.window) return;
+    DADisplayLinkTarget *target = [[DADisplayLinkTarget alloc] init];
+    target.controller = self;
+    self.displayLink = [CADisplayLink displayLinkWithTarget:target selector:@selector(tick:)];
+    [self.displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 
-- (void)setConstraintBasedKeyboardDidMoveBlock:(DAKeyboardDidMoveBlock)constraintBasedKeyboardDidMoveBlock
+- (void)hostAttachmentChanged
 {
-    [self willChangeValueForKey:@"constraintBasedKeyboardDidMoveBlock"];
-    objc_setAssociatedObject(self,
-                             &UIViewKeyboardDidMoveConstraintBasedBlock,
-                             constraintBasedKeyboardDidMoveBlock,
-                             OBJC_ASSOCIATION_COPY);
-    [self didChangeValueForKey:@"constraintBasedKeyboardDidMoveBlock"];
+    if (!self.installed) return;
+    if (!self.host.window) {
+        [self.displayLink invalidate];
+        self.displayLink = nil;
+        self.tracking = NO;
+        return;
+    }
+    self.tracking = [self ownsFirstResponder];
+    [self startDisplayLink];
 }
 
+- (void)inputBegan:(NSNotification *)notification
+{
+    UIView *input = notification.object;
+    if ([input isKindOfClass:UIView.class] && [input isDescendantOfView:self.host]) {
+        self.tracking = YES;
+        [self startDisplayLink];
+    }
+}
+
+- (void)keyboardWillShow:(NSNotification *)notification
+{
+    if (![self ownsFirstResponder]) return;
+    self.tracking = YES;
+    self.opening = YES;
+    self.closing = NO;
+    [self startDisplayLink];
+}
+
+- (void)keyboardWillHide:(NSNotification *)notification
+{
+    if (!self.tracking) return;
+    self.opening = NO;
+    self.closing = YES;
+    [self startDisplayLink];
+}
+
+- (CGRect)currentFrame
+{
+    UIView *host = self.host;
+    CGRect bounds = host.bounds;
+    CGFloat bottom = CGRectGetMaxY(bounds);
+    UIPanGestureRecognizer *pan = self.nativeScroll ? self.nativeScroll.panGestureRecognizer : self.dismissalScroll.panGestureRecognizer;
+    BOOL interactive = pan.state == UIGestureRecognizerStateBegan || pan.state == UIGestureRecognizerStateChanged;
+    if (interactive) [host layoutIfNeeded];
+    CGFloat top = CGRectGetMinY(host.keyboardLayoutGuide.layoutFrame);
+    CALayer *presentation = self.trackingView.layer.presentationLayer;
+    // During a drag the guide already contains the current touch-driven
+    // position. Its presentation layer describes the previous rendered frame.
+    // Use presentation sampling only for the keyboard's settling animations.
+    if (!interactive && presentation) top = CGRectGetMinY(presentation.frame);
+    top = MIN(bottom, MAX(CGRectGetMinY(bounds), top));
+    return CGRectMake(CGRectGetMinX(bounds), top, CGRectGetWidth(bounds), bottom - top);
+}
+
+- (void)tick
+{
+    UIView *host = self.host;
+    if (!self.installed || !host.window) {
+        [self.displayLink invalidate];
+        self.displayLink = nil;
+        return;
+    }
+    if (self.dismissalScroll && !CGSizeEqualToSize(self.dismissalScroll.contentSize, host.bounds.size)) {
+        self.dismissalScroll.contentSize = host.bounds.size;
+    }
+    CGRect frame = self.tracking ? [self currentFrame]
+        : CGRectMake(CGRectGetMinX(host.bounds), CGRectGetMaxY(host.bounds), CGRectGetWidth(host.bounds), 0);
+    // Apply every frame so a parent bounds/safe-area change updates locked
+    // views even if the keyboard is stationary. The bridge suppresses repeated
+    // JS events and unchanged native transforms independently.
+    if (self.constraintHandler) self.constraintHandler(frame, self.opening, self.closing);
+    if (self.frameHandler) self.frameHandler(frame, self.opening, self.closing);
+    self.lastFrame = frame;
+    if (fabs(frame.origin.y - CGRectGetMinY(host.keyboardLayoutGuide.layoutFrame)) < 0.5) {
+        self.opening = NO;
+        self.closing = NO;
+    }
+    if (frame.size.height < 0.5 && ![self ownsFirstResponder]) {
+        self.tracking = NO;
+        self.opening = NO;
+        self.closing = NO;
+        [self.displayLink invalidate];
+        self.displayLink = nil;
+    }
+}
+
+- (void)remove
+{
+    if (!self.installed) return;
+    self.installed = NO;
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+    [self.displayLink invalidate];
+    self.displayLink = nil;
+    self.frameHandler = nil;
+    self.constraintHandler = nil;
+    [NSLayoutConstraint deactivateConstraints:self.constraints];
+    [self.trackingView removeFromSuperview];
+    if (self.dismissalScroll) {
+        [self.host removeGestureRecognizer:self.dismissalScroll.panGestureRecognizer];
+        self.dismissalScroll.controller = nil;
+        [self.dismissalScroll removeFromSuperview];
+    }
+    self.nativeScroll.keyboardDismissMode = self.originalDismissMode;
+    self.host.keyboardLayoutGuide.usesBottomSafeArea = self.originalUsesBottomSafeArea;
+    self.host.keyboardLayoutGuide.keyboardDismissPadding = self.originalDismissPadding;
+    self.constraints = nil;
+    self.trackingView = nil;
+    self.dismissalScroll = nil;
+    self.nativeScroll = nil;
+}
+
+- (void)dealloc { [self remove]; }
+@end
+
+@implementation UIView (DAKeyboardControl)
+- (void)addKeyboardControl:(BOOL)panning frameHandler:(DAKeyboardDidMoveBlock)frameHandler constraintHandler:(DAKeyboardDidMoveBlock)constraintHandler
+{
+    [self removeKeyboardControl];
+    DAKeyboardController *controller = [[DAKeyboardController alloc] init];
+    controller.host = self;
+    controller.frameHandler = frameHandler;
+    controller.constraintHandler = constraintHandler;
+    objc_setAssociatedObject(self, &DAControlKey, controller, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [controller installWithPanning:panning];
+}
+
+- (void)addKeyboardPanningWithActionHandler:(DAKeyboardDidMoveBlock)handler
+{
+    [self addKeyboardControl:YES frameHandler:handler constraintHandler:nil];
+}
+- (void)addKeyboardPanningWithFrameBasedActionHandler:(DAKeyboardDidMoveBlock)frameHandler constraintBasedActionHandler:(DAKeyboardDidMoveBlock)constraintHandler
+{
+    [self addKeyboardControl:YES frameHandler:frameHandler constraintHandler:constraintHandler];
+}
+- (void)addKeyboardNonpanningWithActionHandler:(DAKeyboardDidMoveBlock)handler
+{
+    [self addKeyboardControl:NO frameHandler:handler constraintHandler:nil];
+}
+- (void)addKeyboardNonpanningWithFrameBasedActionHandler:(DAKeyboardDidMoveBlock)frameHandler constraintBasedActionHandler:(DAKeyboardDidMoveBlock)constraintHandler
+{
+    [self addKeyboardControl:NO frameHandler:frameHandler constraintHandler:constraintHandler];
+}
+- (void)removeKeyboardControl
+{
+    DAKeyboardController *controller = objc_getAssociatedObject(self, &DAControlKey);
+    [controller remove];
+    objc_setAssociatedObject(self, &DAControlKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 - (CGFloat)keyboardTriggerOffset
 {
-    NSNumber *keyboardTriggerOffsetNumber = objc_getAssociatedObject(self,
-                                                                     &UIViewKeyboardTriggerOffset);
-    return [keyboardTriggerOffsetNumber floatValue];
+    return [objc_getAssociatedObject(self, &DATriggerOffsetKey) doubleValue];
 }
-
-- (void)setKeyboardTriggerOffset:(CGFloat)keyboardTriggerOffset
+- (void)setKeyboardTriggerOffset:(CGFloat)offset
 {
-    [self willChangeValueForKey:@"keyboardTriggerOffset"];
-    objc_setAssociatedObject(self,
-                             &UIViewKeyboardTriggerOffset,
-                             [NSNumber numberWithFloat:keyboardTriggerOffset],
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [self didChangeValueForKey:@"keyboardTriggerOffset"];
+    objc_setAssociatedObject(self, &DATriggerOffsetKey, @(MAX(0, offset)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    DAKeyboardController *controller = objc_getAssociatedObject(self, &DAControlKey);
+    [controller updateTriggerOffset];
 }
-
-- (BOOL)isPanning
+- (CGRect)keyboardFrameInView
 {
-    NSNumber *isPanningNumber = objc_getAssociatedObject(self,
-                                                         &UIViewIsPanning);
-    return [isPanningNumber boolValue];
+    DAKeyboardController *controller = objc_getAssociatedObject(self, &DAControlKey);
+    if (controller && !CGRectIsNull(controller.lastFrame)) return controller.lastFrame;
+    return CGRectMake(CGRectGetMinX(self.bounds), CGRectGetMaxY(self.bounds), CGRectGetWidth(self.bounds), 0);
 }
-
-- (void)setPanning:(BOOL)panning
-{
-    [self willChangeValueForKey:@"panning"];
-    objc_setAssociatedObject(self,
-                             &UIViewIsPanning,
-                             @(panning),
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [self didChangeValueForKey:@"panning"];
-}
-
-- (UIResponder *)keyboardActiveInput
-{
-    return objc_getAssociatedObject(self,
-                                    &UIViewKeyboardActiveInput);
-}
-
-- (void)setKeyboardActiveInput:(UIResponder *)keyboardActiveInput
-{
-    [self willChangeValueForKey:@"keyboardActiveInput"];
-    objc_setAssociatedObject(self,
-                             &UIViewKeyboardActiveInput,
-                             keyboardActiveInput,
-                             OBJC_ASSOCIATION_RETAIN);
-    [self didChangeValueForKey:@"keyboardActiveInput"];
-}
-
-- (UIView *)keyboardActiveView
-{
-    return objc_getAssociatedObject(self,
-                                    &UIViewKeyboardActiveView);
-}
-
-- (void)setKeyboardActiveView:(UIView *)keyboardActiveView
-{
-    [self willChangeValueForKey:@"keyboardActiveView"];
-    [self.keyboardActiveView removeObserver:self
-                                 forKeyPath:@"frame"];
-    if (keyboardActiveView)
-    {
-        [keyboardActiveView addObserver:self
-                             forKeyPath:@"frame"
-                                options:0
-                                context:NULL];
-    }
-    objc_setAssociatedObject(self,
-                             &UIViewKeyboardActiveView,
-                             keyboardActiveView,
-                             OBJC_ASSOCIATION_RETAIN);
-    [self didChangeValueForKey:@"keyboardActiveView"];
-}
-
-- (UIPanGestureRecognizer *)keyboardPanRecognizer
-{
-    return objc_getAssociatedObject(self,
-                                    &UIViewKeyboardPanRecognizer);
-}
-
-- (void)setKeyboardPanRecognizer:(UIPanGestureRecognizer *)keyboardPanRecognizer
-{
-    [self willChangeValueForKey:@"keyboardPanRecognizer"];
-    objc_setAssociatedObject(self,
-                             &UIViewKeyboardPanRecognizer,
-                             keyboardPanRecognizer,
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [self didChangeValueForKey:@"keyboardPanRecognizer"];
-}
-
-- (BOOL)isKeyboardOpened
-{
-    return [objc_getAssociatedObject(self,
-                                     &UIViewKeyboardOpened) boolValue];
-}
-
-- (void)setKeyboardOpened:(BOOL)keyboardOpened
-{
-    [self willChangeValueForKey:@"keyboardOpened"];
-    objc_setAssociatedObject(self,
-                             &UIViewKeyboardOpened,
-                             @(keyboardOpened),
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [self didChangeValueForKey:@"keyboardOpened"];
-}
-
+- (BOOL)isKeyboardOpened { return self.keyboardFrameInView.size.height > 0.5; }
 - (BOOL)keyboardWillRecede
 {
-    CGFloat keyboardViewHeight = self.keyboardActiveView.bounds.size.height;
-    CGFloat keyboardWindowHeight = self.keyboardActiveView.superview.bounds.size.height;
-    CGPoint touchLocationInKeyboardWindow = [self.keyboardPanRecognizer locationInView:self.keyboardActiveView.superview];
-    
-    CGFloat thresholdHeight = keyboardWindowHeight - keyboardViewHeight - self.keyboardTriggerOffset + 44.0f;
-    CGPoint velocity = [self.keyboardPanRecognizer velocityInView:self.keyboardActiveView];
-    
-    return touchLocationInKeyboardWindow.y >= thresholdHeight && velocity.y >= 0;
+    DAKeyboardController *controller = objc_getAssociatedObject(self, &DAControlKey);
+    UIPanGestureRecognizer *pan = controller.nativeScroll ? controller.nativeScroll.panGestureRecognizer : controller.dismissalScroll.panGestureRecognizer;
+    return pan && pan.state == UIGestureRecognizerStateChanged && [pan velocityInView:self].y > 0;
 }
-
+- (void)hideKeyboard { [self endEditing:YES]; }
 @end

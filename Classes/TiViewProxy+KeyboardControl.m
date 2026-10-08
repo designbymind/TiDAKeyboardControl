@@ -34,7 +34,7 @@ DEFINE_DEF_PROP(lockedViews, nil);
 {
     ENSURE_UI_THREAD(setKeyboardPanning, args);
 
-    BOOL oldValue = [self keyboardPanning];
+    BOOL oldValue = [TiUtils boolValue:[self keyboardPanning] def:NO];
     BOOL newValue = [TiUtils boolValue:args def:NO];
 
     [self replaceValue:[NSNumber numberWithBool:newValue]
@@ -43,46 +43,63 @@ DEFINE_DEF_PROP(lockedViews, nil);
 
     if (newValue && !oldValue)
     {
-        [self setupKeyboardPanning];
+        // Constructor properties are applied before Titanium finishes creating
+        // the safe-area proxy and native property maps. Defer native view
+        // creation until that initialization has completed.
+        [self performSelector:@selector(setupKeyboardPanning) withObject:nil afterDelay:0];
     }
     else if (!newValue && oldValue)
     {
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(setupKeyboardPanning) object:nil];
         [self teardownKeyboardPanning];
     }
 }
 
 
-- (BOOL)keyboardPanning
+- (id)keyboardPanning
 {
     id value = [self valueForUndefinedKey:@"keyboardPanning"];
     if (value == nil || value == [NSNull null] || ![value respondsToSelector:@selector(boolValue)])
     {
-        return NO;
+        return @NO;
     }
     else
     {
-        return [value boolValue];
+        return @([value boolValue]);
     }
 }
 
 
 - (void)setupKeyboardPanning
 {
+    if (![TiUtils boolValue:[self keyboardPanning] def:NO]) return;
+    self.view.keyboardTriggerOffset = [TiUtils floatValue:[self valueForUndefinedKey:@"keyboardTriggerOffset"] def:0];
     [self replaceValue:self.view
                 forKey:@"keyboardPanningView"
           notification:NO];
 
-    [self.view addKeyboardPanningWithActionHandler:^(CGRect keyboardFrameInView) {
-        [self updateKeyboardPanningLockedViews:keyboardFrameInView];
-        [self fireEventForKeyboardFrameInView:keyboardFrameInView];
+    // This bridge is compiled without ARC. A __block reference is non-owning
+    // here; retaining self from the view's callback would create a proxy cycle.
+    __block TiViewProxy *panningProxy = self;
+    [self.view addKeyboardPanningWithActionHandler:^(CGRect keyboardFrameInView, BOOL opening, BOOL closing) {
+        [panningProxy updateKeyboardPanningLockedViews:keyboardFrameInView];
+        [panningProxy fireEventForKeyboardFrameInView:keyboardFrameInView];
     }];
 }
 
 
 - (void)teardownKeyboardPanning
 {
-    TiUIView * panningView = [self valueForKey:@"keyboardPanningView"];
-    [panningView removeKeyboardControl];
+    id panningView = [self valueForKey:@"keyboardPanningView"];
+    if ([panningView isKindOfClass:UIView.class]) {
+        [panningView removeKeyboardControl];
+        if ([panningView window]) {
+            CGRect bounds = [panningView bounds];
+            [self updateKeyboardPanningLockedViews:CGRectMake(0, CGRectGetMaxY(bounds), CGRectGetWidth(bounds), 0)];
+        }
+    }
+    [self replaceValue:[NSNull null] forKey:@"keyboardPanningView" notification:NO];
+    [self replaceValue:[NSNull null] forKey:@"keyboardPanningLastFrame" notification:NO];
 }
 
 
@@ -91,6 +108,10 @@ DEFINE_DEF_PROP(lockedViews, nil);
     if (![self _hasListeners:@"keyboardchange"]) {
         return;
     }
+
+    id previousFrame = [self valueForUndefinedKey:@"keyboardPanningLastFrame"];
+    if ([previousFrame isKindOfClass:NSValue.class] && CGRectEqualToRect([previousFrame CGRectValue], keyboardFrameInView)) return;
+    [self replaceValue:[NSValue valueWithCGRect:keyboardFrameInView] forKey:@"keyboardPanningLastFrame" notification:NO];
 
     NSNumber * keyboardWidth = [NSNumber numberWithFloat:keyboardFrameInView.size.width];
     NSNumber * keyboardHeight = [NSNumber numberWithFloat:keyboardFrameInView.size.height];
@@ -128,15 +149,18 @@ DEFINE_DEF_PROP(lockedViews, nil);
         return;
     }
 
-    float keyboardHeight = keyboardFrameInView.size.height;
-    float keyboardY = keyboardFrameInView.origin.y;
-    float height = self.view.frame.size.height;
-
-    float shift = keyboardHeight <= 0 ? 0 : (height - keyboardY);
-
     for (TiViewProxy * proxy in lockedViews) {
-        if (proxy != nil)
+        if ([proxy isKindOfClass:TiViewProxy.class])
         {
+            UIView *nativeView = proxy.view;
+            UIView *parentView = nativeView.superview;
+            if (!parentView || ![nativeView isDescendantOfView:self.view]) continue;
+            // The real parent is already inset by Titanium when extendSafeArea
+            // or extendEdges limits the content. Convert it to the host's local
+            // coordinates rather than subtracting the home-indicator inset twice.
+            CGRect parentBounds = [parentView convertRect:parentView.bounds toView:self.view];
+            CGFloat bottom = MIN(CGRectGetMaxY(self.view.bounds), CGRectGetMaxY(parentBounds));
+            CGFloat shift = keyboardFrameInView.size.height <= 0 ? 0 : MAX(0, bottom - keyboardFrameInView.origin.y);
             [self updateKeyboardPanningLockedView:proxy with:shift];
         }
     }
@@ -149,17 +173,23 @@ DEFINE_DEF_PROP(lockedViews, nil);
 
     CGAffineTransform transform = CGAffineTransformMakeTranslation(0.0f, -shift);
 
-    Ti2DMatrix * matrix = [[Ti2DMatrix alloc] initWithMatrix:transform];
+    if (CGAffineTransformEqualToTransform(proxyView.transform, transform)) return;
 
-    [proxy replaceValue:matrix forKey:@"transform" notification:YES];
-    [proxyView setTransform_:matrix];
+    Ti2DMatrix * matrix = [[[Ti2DMatrix alloc] initWithMatrix:transform] autorelease];
+
+    // Keep the JS value current, but apply once on the UI thread. A property
+    // notification can queue a second update behind the live keyboard motion.
+    [proxy replaceValue:matrix forKey:@"transform" notification:NO];
+    [UIView performWithoutAnimation:^{ [proxyView setTransform_:matrix]; }];
 }
 
 
 - (void)setKeyboardTriggerOffset:(id)args
 {
-    float offset = [TiUtils floatValue:args def:0.0f];
-    self.view.keyboardTriggerOffset = offset;
+    ENSURE_UI_THREAD(setKeyboardTriggerOffset, args);
+    float offset = MAX(0, [TiUtils floatValue:args def:0.0f]);
+    [self replaceValue:@(offset) forKey:@"keyboardTriggerOffset" notification:NO];
+    if ([self viewInitialized]) self.view.keyboardTriggerOffset = offset;
 }
 
 
