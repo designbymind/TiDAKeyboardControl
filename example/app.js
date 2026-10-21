@@ -1,6 +1,7 @@
 var automatic = require('automatic');
 var manual = require('manual');
 var panning = require('panning');
+var chat = require('chat');
 
 var win = Ti.UI.createWindow({
 	layout:'vertical'
@@ -31,5 +32,8 @@ panningButton.addEventListener('click', panning);
 win.add(automaticButton);
 win.add(manualButton);
 win.add(panningButton);
+var chatButton = Ti.UI.createButton({ title: 'Chat layout', width: 200, height: 50 });
+chatButton.addEventListener('click', chat);
+win.add(chatButton);
 
 win.open();

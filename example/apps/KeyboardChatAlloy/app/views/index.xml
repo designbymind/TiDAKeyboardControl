@@ -1,0 +1,12 @@
+<Alloy>
+    <NavigationWindow id="navigation">
+        <Window id="menu">
+            <Label id="instructions">Open a layout. Try the keyboard at the bottom and while reading history. Type multiple lines, scroll the TextArea, and pan from the blue margin.</Label>
+            <Button class="mode" onClick="openSafe">Safe area / no extended edges</Button>
+            <Button class="mode" onClick="openExtended">Extended / no extended edges</Button>
+            <Button class="mode" onClick="openSafeAll">Safe area / all edges</Button>
+            <Button class="mode" onClick="openExtendedAll">Extended / all edges</Button>
+            <Button class="mode" onClick="openShort">Short conversation</Button>
+        </Window>
+    </NavigationWindow>
+</Alloy>

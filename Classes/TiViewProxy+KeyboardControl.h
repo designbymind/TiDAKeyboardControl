@@ -21,6 +21,12 @@
 
 - (void)setKeyboardPanning:(id)args;
 - (id)keyboardPanning;
+- (id)keyboardScrollingView;
+- (id)keyboardScrollToBottomThreshold;
+- (id)keyboardDismissalScrollCorrection;
+- (void)setKeyboardDismissalScrollCorrection:(id)value;
+- (void)setKeyboardScrollToBottomThreshold:(id)value;
+- (void)setKeyboardScrollingView:(id)value;
 
 
 @end

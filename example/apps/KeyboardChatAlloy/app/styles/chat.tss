@@ -1,0 +1,9 @@
+"#chat": { backgroundColor: '#ffffff', autoAdjustScrollViewInsets: true }
+"#messages": { top: 0, bottom: 0, separatorStyle: Ti.UI.TABLE_VIEW_SEPARATOR_STYLE_NONE }
+"#composer": { left: 0, right: 0, bottom: 0, height: 80, backgroundColor: '#007aff' }
+"#input": {
+    left: 36, right: 76, top: 12, height: 42, scrollable: true,
+    font: { fontSize: 17 }, color: '#111111', backgroundColor: '#ffffff',
+    padding: { top: 8, bottom: 8, left: 8, right: 8 }, suppressReturn: false
+}
+"#hide": { right: 6, top: 12, width: 64, height: 42, color: '#ffffff' }

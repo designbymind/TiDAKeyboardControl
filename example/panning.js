@@ -3,18 +3,18 @@ module.exports = function () {
     require('it.smc.dakeyboardcontrol');
 
     var menu = Ti.UI.createWindow({
-        title: 'Keyboard panning 1.1.0',
+        title: 'Keyboard panning 1.1.1',
         backgroundColor: '#ffffff',
         extendSafeArea: false,
         layout: 'vertical'
     });
     var navigation = Ti.UI.createNavigationWindow({ window: menu });
     menu.add(Ti.UI.createLabel({
-        text: 'Open a mode, tap the field, then drag the blue margin down. Reverse a partial drag before releasing.',
+        text: 'Drag the blue margin to pan the keyboard. In TextArea modes, scroll inside the text: only the text should move.',
         top: 20, left: 16, right: 16, height: Ti.UI.SIZE, color: '#222222'
     }));
 
-    function openTest(extended, allEdges) {
+    function openTest(extended, allEdges, multiline) {
         var win = Ti.UI.createWindow({
             title: extended ? 'Extended content' : 'Safe-area content',
             backgroundColor: '#ffffff',
@@ -27,12 +27,16 @@ module.exports = function () {
         var info = Ti.UI.createLabel({
             top: allEdges ? 110 : 20, left: 16, right: 16, height: Ti.UI.SIZE,
             color: '#222222',
-            text: 'extendSafeArea: ' + extended + '\nextendEdges: ' + (allEdges ? 'ALL' : 'none') + '\nBlue bar should stay attached throughout a drag.'
+            text: 'extendSafeArea: ' + extended + '\nextendEdges: ' + (allEdges ? 'ALL' : 'none') + '\n' + (multiline ? 'Scroll inside the TextArea; drag the blue margin to pan the keyboard.' : 'Blue bar should stay attached throughout a drag.')
         });
         var composer = Ti.UI.createView({
-            left: 0, right: 0, bottom: 0, height: 80, backgroundColor: '#007aff'
+            left: 0, right: 0, bottom: 0, height: multiline ? 132 : 80, backgroundColor: '#007aff'
         });
-        var input = Ti.UI.createTextField({
+        var input = multiline ? Ti.UI.createTextArea({
+            left: 40, right: 80, height: 96, scrollable: true,
+            value: 'Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12',
+            backgroundColor: '#ffffff', color: '#111111', font: { fontSize: 18 }
+        }) : Ti.UI.createTextField({
             left: 40, right: 80, height: 38, hintText: 'Tap to show keyboard',
             borderStyle: Ti.UI.INPUT_BORDERSTYLE_ROUNDED, backgroundColor: '#ffffff', color: '#111111'
         });
@@ -74,15 +78,18 @@ module.exports = function () {
         navigation.openWindow(win);
     }
 
-    [
+    var modes = [
         { title: 'Safe area / no extended edges', extended: false, edges: false },
         { title: 'Extended content / no extended edges', extended: true, edges: false },
         { title: 'Safe area / all extended edges', extended: false, edges: true },
         { title: 'Extended content / all extended edges', extended: true, edges: true }
-    ].forEach(function (mode) {
-        var button = Ti.UI.createButton({ title: mode.title, top: 16, left: 16, right: 16, height: 48 });
-        button.addEventListener('click', function () { openTest(mode.extended, mode.edges); });
-        menu.add(button);
+    ];
+    [false, true].forEach(function (multiline) {
+        modes.forEach(function (mode) {
+            var button = Ti.UI.createButton({ title: (multiline ? 'TextArea: ' : '') + mode.title, top: 8, left: 16, right: 16, height: 44 });
+            button.addEventListener('click', function () { openTest(mode.extended, mode.edges, multiline); });
+            menu.add(button);
+        });
     });
     navigation.open();
 };

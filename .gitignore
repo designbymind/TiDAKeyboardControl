@@ -4,3 +4,11 @@ build
 *.zip
 metadata.json
 .DS_Store
+
+# Self-contained example projects are intentional distribution artifacts.
+!example/KeyboardChat-Classic-1.2.0.zip
+!example/KeyboardChat-Alloy-1.2.0.zip
+!example/apps/**/metadata.json
+
+!example/KeyboardChat-Classic-1.2.1.zip
+!example/KeyboardChat-Alloy-1.2.1.zip

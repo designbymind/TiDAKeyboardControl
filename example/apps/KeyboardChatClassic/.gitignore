@@ -1,0 +1,4 @@
+build/
+Resources/alloy/
+Resources/app.js.map
+.DS_Store

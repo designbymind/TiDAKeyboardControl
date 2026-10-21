@@ -22,12 +22,89 @@
 #import "TiViewProxy.h"
 #import "TiViewProxy+KeyboardControl.h"
 #import "DAKeyboardControl.h"
+// Resolve the optional TableView at runtime so panning-only consumers do not
+// acquire a native link dependency on Titanium's TableView feature.
+@protocol DAKCTableViewAccess <NSObject>
+- (UITableView *)tableView;
+@end
 
 
 @implementation TiViewProxy (KeyboardControl)
 
 
 DEFINE_DEF_PROP(lockedViews, nil);
+
+- (id)keyboardDismissalScrollCorrection
+{
+    return [self valueForUndefinedKey:@"keyboardDismissalScrollCorrection"] ?: @YES;
+}
+- (void)setKeyboardDismissalScrollCorrection:(id)value
+{
+    ENSURE_UI_THREAD(setKeyboardDismissalScrollCorrection, value);
+    ENSURE_TYPE(value, NSNumber);
+    [self replaceValue:@([value boolValue]) forKey:@"keyboardDismissalScrollCorrection" notification:NO];
+    if ([self viewInitialized]) self.view.keyboardDismissalScrollCorrection = [value boolValue];
+}
+
+- (id)keyboardScrollToBottomThreshold
+{
+    return [self valueForUndefinedKey:@"keyboardScrollToBottomThreshold"] ?: @60;
+}
+
+- (void)setKeyboardScrollToBottomThreshold:(id)value
+{
+    ENSURE_UI_THREAD(setKeyboardScrollToBottomThreshold, value);
+    ENSURE_TYPE(value, NSNumber);
+    double threshold = [value doubleValue];
+    if (!isfinite(threshold) || threshold < 0) {
+        [NSException raise:NSInvalidArgumentException format:@"keyboardScrollToBottomThreshold requires a finite nonnegative number"];
+    }
+    [self replaceValue:value forKey:@"keyboardScrollToBottomThreshold" notification:NO];
+    if ([self viewInitialized]) self.view.keyboardScrollToBottomThreshold = threshold;
+}
+
+- (id)keyboardScrollingView
+{
+    return [self valueForUndefinedKey:@"keyboardScrollingView"];
+}
+
+- (void)setKeyboardScrollingView:(id)value
+{
+    ENSURE_UI_THREAD(setKeyboardScrollingView, value);
+    if (value == [NSNull null]) value = nil;
+    ENSURE_TYPE_OR_NIL(value, TiViewProxy);
+    if (value && ![value isKindOfClass:NSClassFromString(@"TiUITableViewProxy")]) {
+        [NSException raise:NSInvalidArgumentException format:@"keyboardScrollingView requires a Ti.UI.TableView or null"];
+    }
+    [self replaceValue:value ?: [NSNull null] forKey:@"keyboardScrollingView" notification:NO];
+    if ([self viewInitialized]) [self.view refreshKeyboardControl];
+}
+
+- (void)updateKeyboardPanningScrollingView:(CGRect)keyboardFrame
+{
+    id proxy = [self keyboardScrollingView];
+    UIScrollView *scroll = nil;
+    if ([proxy isKindOfClass:TiViewProxy.class] && [proxy viewInitialized]) {
+        UIView *native = [proxy view];
+        if ([native isKindOfClass:NSClassFromString(@"TiUITableView")] && [native isDescendantOfView:self.view]) {
+            scroll = [(id<DAKCTableViewAccess>)native tableView];
+        }
+    }
+    CGFloat occlusion = 0;
+    if (scroll && scroll.window) {
+        CGRect viewport = [scroll convertRect:scroll.bounds toView:self.view];
+        CGFloat coveredTop = keyboardFrame.size.height > 0 ? keyboardFrame.origin.y : CGRectGetMaxY(viewport);
+        for (id locked in [self lockedViews]) {
+            if (![locked isKindOfClass:TiViewProxy.class] || ![locked viewInitialized]) continue;
+            UIView *view = [locked view];
+            if (view.hidden || view.alpha < 0.01 || ![view isDescendantOfView:self.view]) continue;
+            CGRect frame = [view convertRect:view.bounds toView:self.view];
+            if (CGRectIntersectsRect(frame, viewport)) coveredTop = MIN(coveredTop, CGRectGetMinY(frame));
+        }
+        occlusion = MAX(0, CGRectGetMaxY(viewport) - MAX(CGRectGetMinY(viewport), coveredTop));
+    }
+    [self.view updateKeyboardScrollingView:scroll occludedHeight:occlusion];
+}
 
 
 - (void)setKeyboardPanning:(id)args
@@ -73,6 +150,8 @@ DEFINE_DEF_PROP(lockedViews, nil);
 - (void)setupKeyboardPanning
 {
     if (![TiUtils boolValue:[self keyboardPanning] def:NO]) return;
+    self.view.keyboardDismissalScrollCorrection = [TiUtils boolValue:[self keyboardDismissalScrollCorrection] def:YES];
+    self.view.keyboardScrollToBottomThreshold = [TiUtils floatValue:[self keyboardScrollToBottomThreshold] def:60];
     self.view.keyboardTriggerOffset = [TiUtils floatValue:[self valueForUndefinedKey:@"keyboardTriggerOffset"] def:0];
     [self replaceValue:self.view
                 forKey:@"keyboardPanningView"
@@ -83,7 +162,27 @@ DEFINE_DEF_PROP(lockedViews, nil);
     __block TiViewProxy *panningProxy = self;
     [self.view addKeyboardPanningWithActionHandler:^(CGRect keyboardFrameInView, BOOL opening, BOOL closing) {
         [panningProxy updateKeyboardPanningLockedViews:keyboardFrameInView];
+        [panningProxy updateKeyboardPanningScrollingView:keyboardFrameInView];
         [panningProxy fireEventForKeyboardFrameInView:keyboardFrameInView];
+    } shouldReceiveTouch:^BOOL(UIView *touchedView) {
+        // UIKit may hit a TextArea's internal text/selection view. Walk its
+        // ancestors to find the UITextView, then check the current lockedViews.
+        UIView *host = panningProxy.view;
+        UIView *textArea = touchedView;
+        while (textArea && textArea != host && ![textArea isKindOfClass:UITextView.class]) {
+            textArea = textArea.superview;
+        }
+        if (![textArea isKindOfClass:UITextView.class]) return YES;
+        id lockedViews = [panningProxy lockedViews];
+        if (![lockedViews isKindOfClass:NSArray.class]) return YES;
+        for (id proxy in lockedViews) {
+            if (![proxy isKindOfClass:TiViewProxy.class] || ![proxy viewInitialized]) continue;
+            UIView *lockedView = [proxy view];
+            if ([lockedView isDescendantOfView:host] && [textArea isDescendantOfView:lockedView]) {
+                return NO;
+            }
+        }
+        return YES;
     }];
 }
 

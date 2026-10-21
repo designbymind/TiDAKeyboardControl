@@ -1,3 +1,27 @@
+1.2.2 (development)
+- Mirror bound-table top distance in the dismissal helper so sheet handoff can follow the real content position.
+- Avoid phantom composer overlap during simultaneous sheet expansion and keyboard opening by measuring animated geometry consistently.
+- Preserve native interactive-drag timing and existing inset/history behavior.
+
+1.2.1 (development)
+- Animate dismissal correction with UIKit scrolling; preserve intermediate animation offsets and user interruption.
+- Correct table lead-in scrolling after an actual interactive keyboard dismissal pan starts at the latest message and settles.
+- Add keyboardDismissalScrollCorrection (default true); retain 1.2.0 refocus threshold behavior.
+
+1.2.0 (preserved development baseline)
+- Add configurable keyboardScrollToBottomThreshold (default 60 points, 0 disables) for near-bottom keyboard refocus.
+- Add optional keyboardScrollingView TableView coordination without resizing or reparenting content.
+- Track keyboard/composer obstruction with safe-area-aware bottom content and indicator insets.
+- Pin existing bottom readers while preserving history offsets during keyboard and composer changes.
+- Restore original bottom insets on disable or table replacement; preserve the Titanium table delegate.
+- Add an isolated chat example with growing input, safe-area modes, short content, and appending messages.
+
+1.1.1 (development)
+- Keep drags beginning in a TextArea inside lockedViews with the TextArea, preventing simultaneous keyboard dismissal.
+- Keep locked views at rest after confirmed keyboard dismissal, including when a cancelled navigation swipe restores input focus without showing the keyboard.
+- Disable system-bar scroll-edge effects and status-bar scroll-to-top participation on the empty keyboard-dismissal helper.
+- Add scrollable multiline TextArea cases for all four safe-area/extended-edge modes.
+
 1.1.0 (2026-10-07)
 - Replace private keyboard-view manipulation with native interactive dismissal.
 - Track keyboard movement with UIKeyboardLayoutGuide on iOS 18 and later.

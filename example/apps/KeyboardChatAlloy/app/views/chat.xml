@@ -1,0 +1,13 @@
+<Alloy>
+    <Window id="chat" onClose="onClose">
+        <RightNavButtons>
+            <Button id="latest" title="Latest" onClick="showLatest" />
+            <Button id="append" title="Append" onClick="appendMessage" />
+        </RightNavButtons>
+        <TableView id="messages" onPostlayout="onTableLayout" />
+        <View id="composer" onPostlayout="onComposerLayout">
+            <TextArea id="input" onChange="onInputChange" />
+            <Button id="hide" title="Hide" onClick="hideKeyboard" />
+        </View>
+    </Window>
+</Alloy>
