@@ -10,6 +10,7 @@
 
 typedef void (^DAKeyboardDidMoveBlock)(CGRect keyboardFrameInView, BOOL opening, BOOL closing);
 typedef BOOL (^DAKeyboardTouchFilterBlock)(UIView *touchedView);
+typedef void (^DAKeyboardTransitionBlock)(CGRect targetFrame, NSTimeInterval duration, UIViewAnimationOptions options);
 
 /** Keyboard awareness and native interactive dismissal for UIView/UIScrollView
  hosts on iOS 18 and later. Frames are local to the host, with zero height when
@@ -64,6 +65,9 @@ typedef BOOL (^DAKeyboardTouchFilterBlock)(UIView *touchedView);
 // it into the helper scroll view or replacing its delegate.
 - (void)updateKeyboardScrollingView:(UIScrollView *)scrollView occludedHeight:(CGFloat)height;
 - (void)refreshKeyboardControl;
+// Internal Titanium bridge hook for native, noninteractive show/hide animation.
+- (void)setKeyboardControlTransitionHandler:(DAKeyboardTransitionBlock)handler;
+@property (nonatomic, readonly) BOOL keyboardControlPanActive;
 
 /** Returns the keyboard frame in the view */
 - (CGRect)keyboardFrameInView;

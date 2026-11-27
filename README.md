@@ -13,7 +13,19 @@ Do you want to create a perfect clone of the iMessage compose interface? ***Fear
 
 Titanium SDK wrapper for the awesome [DAKeyboardControl][dakc] from [@danielamitay][da]! (iOS only)
 
-### Version 1.2.2 development
+### Version 1.2.4 development
+
+For locked views without a bound `keyboardScrollingView`, ordinary keyboard
+show/hide now requests a native UIKit animation using the keyboard's reported
+duration and curve. This avoids applying that transition as a series of
+unanimated transform samples. Interactive panning and bound-table inset/history
+coordination retain their established direct-tracking path. Changing host
+geometry interrupts the native animation and resumes guide tracking.
+
+No new JavaScript configuration is required. This is an unvalidated test build;
+the user will perform simulator and device checks. It does **not** establish a
+fix for page-sheet rubber-band jitter. The 1.2.3 coordinate correction was
+removed because user testing found no improvement. See [test notes](tests/VALIDATION.md).
 
 Opt a TableView into native chat inset coordination by setting
 `keyboardScrollingView` on the host window:
@@ -46,7 +58,7 @@ Run `require('chat')();` using `example/chat.js` for long/short conversations,
 four safe-area/edge layouts, growing TextArea, Append, and Latest controls.
 The TextArea height is capped in the example; the module measures the actual
 locked view and does not prescribe a composer design. Package:
-`dist/it.smc.dakeyboardcontrol-iphone-1.2.2.zip`.
+`dist/it.smc.dakeyboardcontrol-iphone-1.2.4.zip`.
 
 On iOS 27.0, manual simulator checks passed for all four safe-area/edge layouts:
 keyboard panning/reversal, composer growth/shrinkage, bottom anchoring, history

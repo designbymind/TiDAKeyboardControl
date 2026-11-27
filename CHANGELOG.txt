@@ -1,3 +1,14 @@
+1.2.4 (development)
+- Animate ordinary locked-view show/hide using the keyboard notification's duration and curve when no TableView is bound.
+- Retain direct tracking for interactive gestures, bound tables, zero-duration transitions, and host geometry changes.
+- Revert the unconfirmed 1.2.3 rendered-sheet coordinate correction after user testing found no improvement.
+- Physical-device and simulator validation of this animation candidate remains pending.
+
+1.2.3 (development)
+- Compensate for rendered/model sheet movement when positioning locked views above a stationary keyboard.
+- Keep keyboard show/hide presentation sampling and native interactive keyboard tracking.
+- Device and simulator testing of page-sheet jitter remains pending.
+
 1.2.2 (development)
 - Mirror bound-table top distance in the dismissal helper so sheet handoff can follow the real content position.
 - Avoid phantom composer overlap during simultaneous sheet expansion and keyboard opening by measuring animated geometry consistently.

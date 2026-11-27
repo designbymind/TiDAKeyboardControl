@@ -10,6 +10,7 @@
 - (void)captureDismissalTouch:(UIView *)view keyboardFrame:(CGRect)frame;
 - (void)observeDismissalFrame:(CGRect)frame panState:(UIGestureRecognizerState)state;
 - (void)dismissalPanChanged:(UIPanGestureRecognizer *)pan;
+- (void)notifyTransition:(NSNotification *)notification hiding:(BOOL)hiding;
 @end
 static id<OpeningAnchorTestAccess> testController(UIView *host) {
     for (UIView *view in host.subviews) {
@@ -294,7 +295,41 @@ static BOOL near(CGFloat a, CGFloat b) { return fabs(a - b) < 0.5; }
     [host removeKeyboardControl];
     check(near(scroll.contentInset.bottom, 7), "repeated setup/teardown restores padding");
     [self runTableHandoffGeometryTests];
+    [self runTransitionNotificationTests];
     [self runSheetOpeningGeometryTests];
+}
+- (void)runTransitionNotificationTests {
+    UIView *host = self.window.rootViewController.view;
+    [host addKeyboardPanningWithActionHandler:^(CGRect frame, BOOL opening, BOOL closing) {}];
+    id<OpeningAnchorTestAccess> controller = testController(host);
+    __block NSUInteger calls = 0;
+    __block CGRect target = CGRectZero;
+    __block NSTimeInterval timing = 0;
+    __block UIViewAnimationOptions options = 0;
+    [host setKeyboardControlTransitionHandler:^(CGRect frame, NSTimeInterval duration, UIViewAnimationOptions flags) {
+        calls++; target = frame; timing = duration; options = flags;
+    }];
+    CGRect end = CGRectMake(0, CGRectGetMaxY(self.window.bounds) - 280, CGRectGetWidth(self.window.bounds), 280);
+    CGRect screen = [self.window convertRect:end toCoordinateSpace:self.window.screen.coordinateSpace];
+    NSDictionary *info = @{UIKeyboardFrameEndUserInfoKey: [NSValue valueWithCGRect:screen],
+        UIKeyboardAnimationDurationUserInfoKey: @0.37, UIKeyboardAnimationCurveUserInfoKey: @7};
+    NSNotification *notification = [NSNotification notificationWithName:UIKeyboardWillShowNotification object:nil userInfo:info];
+    [controller notifyTransition:notification hiding:NO];
+    CGRect local = [host convertRect:end fromView:self.window];
+    check(calls == 1 && near(target.origin.y, local.origin.y), "native animation receives the keyboard's target boundary");
+    check(fabs(timing - 0.37) < 0.001 && (options & (7 << 16)) == (7 << 16), "native animation uses reported timing and curve");
+    check((options & UIViewAnimationOptionBeginFromCurrentState) && (options & UIViewAnimationOptionAllowUserInteraction), "animation permits user interruption from current position");
+    [controller notifyTransition:notification hiding:YES];
+    check(calls == 2 && near(target.size.height, 0), "native hide transition targets the resting boundary");
+    NSNotification *missingTiming = [NSNotification notificationWithName:UIKeyboardWillShowNotification object:nil userInfo:@{UIKeyboardFrameEndUserInfoKey: [NSValue valueWithCGRect:screen]}];
+    [controller notifyTransition:missingTiming hiding:NO];
+    check(calls == 2, "missing animation timing retains direct tracking");
+    UIScrollView *table = [[UIScrollView alloc] initWithFrame:host.bounds];
+    [host addSubview:table];
+    [host updateKeyboardScrollingView:table occludedHeight:0];
+    [controller notifyTransition:notification hiding:NO];
+    check(calls == 2, "bound table retains the established coordination path");
+    [host removeKeyboardControl]; [table removeFromSuperview];
 }
 - (void)runTableHandoffGeometryTests {
     UIView *host = self.window.rootViewController.view;

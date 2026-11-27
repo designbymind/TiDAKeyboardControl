@@ -1,5 +1,10 @@
 # Native inset regression checks
 
+The 1.2.4 source adds six keyboard-notification contract checks to the preserved
+45 baseline checks. The harness compiles but has not been executed for this
+candidate. The five unvalidated 1.2.3 sheet-translation checks were removed with
+that implementation after the user reported no visual improvement.
+
 The standalone UIKit harness exercises bottom anchoring, history offsets,
 appended content, short content, preserved padding, actual safe-area adjustment,
 repeated teardown, configurable refocus boundaries, and active-scroll precedence. It compiles the module's real keyboard backend.

@@ -35,6 +35,7 @@ static char DADismissalCorrectionKey;
 @property (nonatomic, copy) DAKeyboardDidMoveBlock frameHandler;
 @property (nonatomic, copy) DAKeyboardDidMoveBlock constraintHandler;
 @property (nonatomic, copy) DAKeyboardTouchFilterBlock touchFilter;
+@property (nonatomic, copy) DAKeyboardTransitionBlock transitionHandler;
 @property (nonatomic) CGRect lastFrame;
 @property (nonatomic) BOOL originalUsesBottomSafeArea;
 @property (nonatomic) CGFloat originalDismissPadding;
@@ -466,6 +467,7 @@ static UIView *DAFindFirstResponder(UIView *view)
     self.tracking = YES;
     self.opening = YES;
     self.closing = NO;
+    [self notifyTransition:notification hiding:NO];
     [self startDisplayLink];
 }
 
@@ -474,7 +476,32 @@ static UIView *DAFindFirstResponder(UIView *view)
     if (!self.tracking) return;
     self.opening = NO;
     self.closing = YES;
+    [self notifyTransition:notification hiding:YES];
     [self startDisplayLink];
+}
+
+- (void)notifyTransition:(NSNotification *)notification hiding:(BOOL)hiding
+{
+    UIView *host = self.host;
+    UIWindow *window = host.window;
+    if (!window || !self.transitionHandler || host.keyboardControlPanActive || self.scrollingView) return;
+    NSDictionary *info = notification.userInfo;
+    NSTimeInterval duration = [info[UIKeyboardAnimationDurationUserInfoKey] doubleValue];
+    NSValue *endFrame = info[UIKeyboardFrameEndUserInfoKey];
+    if (!endFrame || !isfinite(duration) || duration <= 0) return;
+    CGRect screenFrame = endFrame.CGRectValue;
+    CGRect windowFrame = [window convertRect:screenFrame fromCoordinateSpace:window.screen.coordinateSpace];
+    // Leave undocked keyboards to the existing keyboard layout guide path.
+    if (!hiding && CGRectGetWidth(windowFrame) < CGRectGetWidth(window.bounds) - 1) return;
+    CGRect local = [host convertRect:windowFrame fromView:window];
+    CGFloat bottom = CGRectGetMaxY(host.bounds);
+    CGFloat top = hiding || !CGRectIntersectsRect(local, host.bounds)
+        ? bottom : MIN(bottom, MAX(CGRectGetMinY(host.bounds), CGRectGetMinY(local)));
+    CGRect target = CGRectMake(CGRectGetMinX(host.bounds), top, CGRectGetWidth(host.bounds), bottom - top);
+    NSUInteger curve = [info[UIKeyboardAnimationCurveUserInfoKey] unsignedIntegerValue];
+    UIViewAnimationOptions options = (curve << 16) | UIViewAnimationOptionBeginFromCurrentState
+        | UIViewAnimationOptionAllowUserInteraction;
+    self.transitionHandler(target, duration, options);
 }
 
 - (void)keyboardDidHide:(NSNotification *)notification
@@ -564,6 +591,7 @@ static UIView *DAFindFirstResponder(UIView *view)
     self.frameHandler = nil;
     self.constraintHandler = nil;
     self.touchFilter = nil;
+    self.transitionHandler = nil;
     [self restoreScrollingView];
     [NSLayoutConstraint deactivateConstraints:self.constraints];
     [self.trackingView removeFromSuperview];
@@ -585,6 +613,19 @@ static UIView *DAFindFirstResponder(UIView *view)
 @end
 
 @implementation UIView (DAKeyboardControl)
+- (void)setKeyboardControlTransitionHandler:(DAKeyboardTransitionBlock)handler
+{
+    DAKeyboardController *controller = objc_getAssociatedObject(self, &DAControlKey);
+    controller.transitionHandler = handler;
+}
+
+- (BOOL)keyboardControlPanActive
+{
+    DAKeyboardController *controller = objc_getAssociatedObject(self, &DAControlKey);
+    UIPanGestureRecognizer *pan = controller.nativeScroll ? controller.nativeScroll.panGestureRecognizer : controller.dismissalScroll.panGestureRecognizer;
+    return pan.state == UIGestureRecognizerStateBegan || pan.state == UIGestureRecognizerStateChanged;
+}
+
 - (void)updateKeyboardScrollingView:(UIScrollView *)scrollView occludedHeight:(CGFloat)height
 {
     DAKeyboardController *controller = objc_getAssociatedObject(self, &DAControlKey);

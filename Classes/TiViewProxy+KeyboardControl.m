@@ -161,7 +161,9 @@ DEFINE_DEF_PROP(lockedViews, nil);
     // here; retaining self from the view's callback would create a proxy cycle.
     __block TiViewProxy *panningProxy = self;
     [self.view addKeyboardPanningWithActionHandler:^(CGRect keyboardFrameInView, BOOL opening, BOOL closing) {
-        [panningProxy updateKeyboardPanningLockedViews:keyboardFrameInView];
+        if (![panningProxy keyboardPanningTransitionActiveForFrame:keyboardFrameInView]) {
+            [panningProxy updateKeyboardPanningLockedViews:keyboardFrameInView];
+        }
         [panningProxy updateKeyboardPanningScrollingView:keyboardFrameInView];
         [panningProxy fireEventForKeyboardFrameInView:keyboardFrameInView];
     } shouldReceiveTouch:^BOOL(UIView *touchedView) {
@@ -184,11 +186,79 @@ DEFINE_DEF_PROP(lockedViews, nil);
         }
         return YES;
     }];
+    [self.view setKeyboardControlTransitionHandler:^(CGRect targetFrame, NSTimeInterval duration, UIViewAnimationOptions options) {
+        [panningProxy animateKeyboardPanningLockedViews:targetFrame duration:duration options:options];
+    }];
+}
+
+- (void)cancelKeyboardPanningTransition
+{
+    id state = [self valueForUndefinedKey:@"keyboardPanningTransition"];
+    if (![state isKindOfClass:NSDictionary.class]) return;
+    // Remove only the transform animation owned by keyboard positioning;
+    // leave application opacity or other animations alone.
+    for (id proxy in [self lockedViews]) {
+        if ([proxy isKindOfClass:TiViewProxy.class] && [proxy viewInitialized]) {
+            UIView *view = [proxy view];
+            if ([view isDescendantOfView:self.view]) [view.layer removeAnimationForKey:@"transform"];
+        }
+    }
+    [self replaceValue:[NSNull null] forKey:@"keyboardPanningTransition" notification:NO];
+}
+
+- (BOOL)keyboardPanningTransitionActiveForFrame:(CGRect)frame
+{
+    id state = [self valueForUndefinedKey:@"keyboardPanningTransition"];
+    if (![state isKindOfClass:NSDictionary.class]) return NO;
+    UIView *host = self.view;
+    id table = [self keyboardScrollingView];
+    BOOL interrupted = host.keyboardControlPanActive || (table && table != [NSNull null])
+        || !CGRectEqualToRect(host.bounds, [state[@"bounds"] CGRectValue])
+        || !CGRectEqualToRect([host convertRect:host.bounds toView:host.window], [state[@"windowFrame"] CGRectValue]);
+    if (interrupted) {
+        [self cancelKeyboardPanningTransition];
+        return NO;
+    }
+    CFTimeInterval now = CACurrentMediaTime();
+    CFTimeInterval deadline = [state[@"deadline"] doubleValue];
+    CGRect target = [state[@"target"] CGRectValue];
+    // A presentation sample may trail the completed native animation. Do not
+    // briefly move backward to that stale frame at the handoff. Bound the wait
+    // using the reported duration if UIKit supplies an unexpected final frame.
+    BOOL caughtUp = fabs(frame.origin.y - target.origin.y) < 0.5 && fabs(frame.size.height - target.size.height) < 0.5;
+    if (now >= deadline && (caughtUp || now >= deadline + [state[@"duration"] doubleValue])) {
+        [self replaceValue:[NSNull null] forKey:@"keyboardPanningTransition" notification:NO];
+        return NO;
+    }
+    return YES;
+}
+
+- (void)animateKeyboardPanningLockedViews:(CGRect)frame duration:(NSTimeInterval)duration options:(UIViewAnimationOptions)options
+{
+    // The existing frame-by-frame path coordinates table insets/history.
+    // Do not change that path as part of this focused animation candidate.
+    id table = [self keyboardScrollingView];
+    if ((table && table != [NSNull null]) || !self.view.window || ![[self lockedViews] count]) return;
+    UIView *host = self.view;
+    NSDictionary *state = @{
+        @"bounds": [NSValue valueWithCGRect:host.bounds],
+        @"windowFrame": [NSValue valueWithCGRect:[host convertRect:host.bounds toView:host.window]],
+        @"deadline": @(CACurrentMediaTime() + duration),
+        @"duration": @(duration),
+        @"target": [NSValue valueWithCGRect:frame]
+    };
+    [self replaceValue:state forKey:@"keyboardPanningTransition" notification:NO];
+    // No asynchronous completion captures the non-owning proxy. The next
+    // display tick resumes sampling after the system-reported duration.
+    [UIView animateWithDuration:duration delay:0 options:options animations:^{
+        [self updateKeyboardPanningLockedViews:frame animated:YES];
+    } completion:nil];
 }
 
 
 - (void)teardownKeyboardPanning
 {
+    [self cancelKeyboardPanningTransition];
     id panningView = [self valueForKey:@"keyboardPanningView"];
     if ([panningView isKindOfClass:UIView.class]) {
         [panningView removeKeyboardControl];
@@ -237,6 +307,11 @@ DEFINE_DEF_PROP(lockedViews, nil);
 
 - (void)updateKeyboardPanningLockedViews:(CGRect)keyboardFrameInView
 {
+    [self updateKeyboardPanningLockedViews:keyboardFrameInView animated:NO];
+}
+
+- (void)updateKeyboardPanningLockedViews:(CGRect)keyboardFrameInView animated:(BOOL)animated
+{
     ENSURE_UI_THREAD(updateKeyboardPanningLockedViews, keyboardFrameInView);
 
     NSArray * lockedViews = [self lockedViews];
@@ -260,13 +335,13 @@ DEFINE_DEF_PROP(lockedViews, nil);
             CGRect parentBounds = [parentView convertRect:parentView.bounds toView:self.view];
             CGFloat bottom = MIN(CGRectGetMaxY(self.view.bounds), CGRectGetMaxY(parentBounds));
             CGFloat shift = keyboardFrameInView.size.height <= 0 ? 0 : MAX(0, bottom - keyboardFrameInView.origin.y);
-            [self updateKeyboardPanningLockedView:proxy with:shift];
+            [self updateKeyboardPanningLockedView:proxy with:shift animated:animated];
         }
     }
 }
 
 
-- (void)updateKeyboardPanningLockedView:(TiViewProxy *)proxy with:(float)shift
+- (void)updateKeyboardPanningLockedView:(TiViewProxy *)proxy with:(float)shift animated:(BOOL)animated
 {
     TiUIView * proxyView = [proxy view];
 
@@ -279,7 +354,8 @@ DEFINE_DEF_PROP(lockedViews, nil);
     // Keep the JS value current, but apply once on the UI thread. A property
     // notification can queue a second update behind the live keyboard motion.
     [proxy replaceValue:matrix forKey:@"transform" notification:NO];
-    [UIView performWithoutAnimation:^{ [proxyView setTransform_:matrix]; }];
+    if (animated) [proxyView setTransform_:matrix];
+    else [UIView performWithoutAnimation:^{ [proxyView setTransform_:matrix]; }];
 }
 
 

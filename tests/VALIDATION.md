@@ -70,3 +70,76 @@ The revised table-handoff candidate passes 45 native checks, including five help
 ### User-confirmed table-first handoff on iOS 27
 
 The user confirmed the current 1.2.2 candidate on iPhone 18 Pro: with keyboard focused, only the table scrolls until it reaches its top; with keyboard hidden, scrolling hands off to sheet resizing/dismissal at the table's top. Composer-margin keyboard panning/reversal and smooth first focus from medium remain correct. These manual simulator results validate the targeted handoff behavior with Bottom Sheet 2.3.0. Physical-device and other iOS-version checks were not performed.
+
+
+### 1.2.3 page-sheet motion candidate (2026-11-11)
+
+The reported device recording shows a focused TextField and locked footer in a
+standard page-sheet modal with `forceModal: true` and interactive sheet dismissal
+disabled. Elastic sheet motion causes rapid locked-view position corrections.
+The 1.2.3 candidate converts the keyboard layout boundary through window space
+into the rendered host coordinate system when ancestor/host movement creates a
+model/presentation mismatch. It uses this correction during a drag and stationary
+keyboard sheet spring-back, retaining existing keyboard show/hide sampling.
+No public API or application integration changes are required.
+
+The complete pre-change 1.2.2 checkout (excluding Git/build caches) and all existing
+distributions are backed up at `../TiDAKeyboardControl-1.2.2-preserved-2026-11-11`.
+`BACKUP-SHA256.json` records the preserved file hashes. The prior 1.2.2 ZIP remains
+`5bd72e9268b5ba30023e2a16908f6f8b2f20bb59f9ed80b2de4f13535e063c31`.
+
+The native regression harness compiles with five additional ancestor-translation
+checks: real presentation offset, failure of uncorrected local geometry, fixed
+keyboard alignment during drag, consistent spring-back alignment, and continued
+tracking when the keyboard itself moves. These checks were NOT executed; the
+previous 45 checks have not been rerun for this candidate. Compilation/package
+validation does not establish that the recorded jitter is resolved.
+
+User testing remains pending: repeat stationary-keyboard upward/downward sheet
+bounces and spring-back; then verify genuine keyboard dismissal/reversal,
+ordinary show/hide, safe-area/extended edges, and repeated close/reopen. Include
+both simulator and physical-device checks. DateMaps and installed modules were
+not changed; the user will integrate and test the new package manually.
+
+Final package validation: ZIP CRC and source/embedded manifest match passed; actual static libraries contain arm64 device and arm64/x86_64 simulator slices. Built with Titanium SDK 13.4.1.GA and Xcode 27.1 beta (27A9269). Package SHA-256: `22c03078f34e21361ae7cd63ed1ad3c61ec205e139e458680220a0a10d09f7b4`. No installation, simulator launch, GitHub push, tag, or release was performed.
+
+
+### 1.2.4 ordinary keyboard animation candidate (2026-11-11)
+
+The user reports that 1.2.3 does not improve modal rubber-band jitter. A new
+recording also shows rigid/stepped locked-view movement during ordinary keyboard
+presentation. The 1.2.4 candidate restores the preserved 1.2.2 frame-sampling
+implementation and removes the unconfirmed 1.2.3 coordinate branch.
+
+A narrow bridge hook requests native UIKit show/hide transform animations using
+UIKeyboardAnimationDurationUserInfoKey and UIKeyboardAnimationCurveUserInfoKey.
+It applies only when no keyboardScrollingView is bound. Direct interactive
+tracking, native TableView coordination, undocked keyboards, and missing/zero
+animation durations retain the established path. Display ticks stop overwriting
+the animated transform until the reported duration ends. A pan, table binding,
+or changed host geometry cancels the transform animation and resumes direct
+tracking. Teardown cancels only the owned transform animation. No delayed
+completion callback retains or dereferences a closing Titanium proxy.
+
+A complete pre-change 1.2.3 source/package backup is at
+`../TiDAKeyboardControl-1.2.3-preserved-2026-11-11`; file hashes are recorded in
+BACKUP-SHA256.json. Its ZIP SHA-256 remains
+`22c03078f34e21361ae7cd63ed1ad3c61ec205e139e458680220a0a10d09f7b4`.
+The earlier 1.2.2 backup/distribution is unchanged.
+
+The native harness compiles with six added contract checks for target coordinate
+conversion, reported duration/curve, interruptible animation options, hide target,
+missing timing fallback, and bound-table fallback. These tests have NOT been
+executed. The Titanium bridge/package build is separate evidence from UIKit
+runtime behavior. The user will test simulator and physical-device behavior;
+no consumer app or installed module has been modified.
+
+Pending manual cases: ordinary show/hide on a fixed-size window; repeated quick
+focus/blur; begin a real dismissal pan during keyboard opening, reverse and
+release; safe-area/extended-edge layouts; sheet resizing/opening fallback;
+bound-table bottom/history coordination; close/reopen while animating. The
+page-sheet rubber-band jitter remains a separate unresolved issue.
+
+Animation handoff also waits for the sampled guide to reach the native target after the reported duration, avoiding a backward step to a trailing presentation sample. An additional wait is bounded by the same reported duration; pan/host changes still interrupt immediately.
+
+Final package: ZIP CRC and source/embedded manifest checks passed. Actual library slices are arm64 device and arm64/x86_64 simulator. Built with Titanium SDK 13.4.1.GA and Xcode 27.1 beta (27A9269). SHA-256: `28f2b209c5677909c07bddc5065a311205f239b077fb0267450abc068bbefa5c`. No app/module installation, simulator/device test, GitHub push, tag, or release was performed.

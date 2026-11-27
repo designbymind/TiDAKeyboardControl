@@ -174,3 +174,13 @@ Keyboard opening overlap now measures the rendered host bottom and keyboard-guid
 ### Table-origin sheet handoff (1.2.2 candidate)
 
 The empty dismissal helper now mirrors the bound table's scrollable range and adjusted distance from the top. It should no longer advertise an at-top scroll position while the table is reading history. The real table's delegate and content ownership remain unchanged. The intended native-sheet policy is table scrolling first; sheet bounce/handoff only at the adjusted top, with actual dismissal additionally governed by keyboard focus and the sheet's dismissal policy. Native geometry checks establish the helper state; touch-driven handoff still requires manual validation.
+### Ordinary keyboard animation (1.2.4 development)
+
+Without a bound `keyboardScrollingView`, the module animates locked-view
+show/hide transforms with the keyboard notification's duration and curve.
+Interactive panning, table coordination, undocked keyboards, and transitions
+without a positive reported duration keep their existing tracking behavior.
+A host layout change or dismissal pan interrupts the native transform animation.
+No new JavaScript setting is needed. Simulator and device validation is pending.
+The 1.2.3 page-sheet motion correction was removed following unsuccessful user
+validation; rubber-band jitter has not been resolved by this candidate.
